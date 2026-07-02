@@ -2,6 +2,7 @@
 //! (byte-compatible with the web app's shareable URL), the displayed-sequence merge,
 //! text highlighting, and the grep/awk export.
 
+pub mod displayed;
 pub mod state;
 
 /// Highlight colours, assigned round-robin as highlights are added. Kept here (not
