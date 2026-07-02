@@ -18,6 +18,7 @@ path = "src/main.rs"
 #   ratatui, crossterm  (TUI)      regex   (linear search)   memmap2 (mmap)
 #   rayon (parallel scan)          memchr  (fast literal)    rusqlite (Tier-2 index)
 [dependencies]
+regex = "1"
 
 [profile.release]
 opt-level = 3
