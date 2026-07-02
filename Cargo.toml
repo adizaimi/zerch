@@ -1,0 +1,27 @@
+[package]
+name = "zercher"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+description = "A less-but-smarter terminal log viewer: search, filters, highlights, bookmarks, and log-level/time awareness."
+authors = ["Adi Zaimi <adizaimi@yahoo.com>"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["log", "viewer", "tui", "pager", "less"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "zercher"
+path = "src/main.rs"
+
+# Dependencies are added phase-by-phase as features land (kept intentionally lean):
+#   ratatui, crossterm  (TUI)      regex   (linear search)   memmap2 (mmap)
+#   rayon (parallel scan)          memchr  (fast literal)    rusqlite (Tier-2 index)
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
