@@ -3,6 +3,7 @@
 //! text highlighting, and the grep/awk export.
 
 pub mod displayed;
+pub mod highlight;
 pub mod jsonline;
 pub mod state;
 
