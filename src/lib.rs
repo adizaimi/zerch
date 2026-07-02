@@ -7,4 +7,5 @@
 
 pub mod engine;
 pub mod levels;
+pub mod tui;
 pub mod view;

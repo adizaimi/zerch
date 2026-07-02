@@ -25,6 +25,7 @@ memmap2 = "0.9"
 memchr = "2"
 rayon = "1"
 form_urlencoded = "1"
+ratatui = "0.29"
 
 [profile.release]
 opt-level = 3
