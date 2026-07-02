@@ -15,6 +15,7 @@
 
 use crate::engine::index::LineIndex;
 use crate::levels::Level;
+use rayon::prelude::*;
 use regex::{Regex, RegexBuilder};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -152,12 +153,12 @@ pub fn search(
 ) -> Result<SearchResult, regex::Error> {
     let groups = compile_groups(stack)?;
     let total = index.total_lines();
-    let mut matching = Vec::new();
-    for n in 1..=total {
-        if scope_matches(index, scope, n) && stack_matches(&groups, &index.get_line(n)) {
-            matching.push(n);
-        }
-    }
+    // Parallel scan across cores. rayon's `collect` preserves iteration order, so
+    // the result stays ascending without an explicit sort.
+    let matching: Vec<usize> = (1..=total)
+        .into_par_iter()
+        .filter(|&n| scope_matches(index, scope, n) && stack_matches(&groups, &index.get_line(n)))
+        .collect();
     Ok(SearchResult {
         total_matches: matching.len(),
         matching_lines: matching,
