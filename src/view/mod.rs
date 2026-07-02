@@ -3,6 +3,7 @@
 //! text highlighting, and the grep/awk export.
 
 pub mod displayed;
+pub mod jsonline;
 pub mod state;
 
 /// Highlight colours, assigned round-robin as highlights are added. Kept here (not
