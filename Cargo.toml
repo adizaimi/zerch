@@ -19,6 +19,8 @@ path = "src/main.rs"
 #   rayon (parallel scan)          memchr  (fast literal)    rusqlite (Tier-2 index)
 [dependencies]
 regex = "1"
+chrono = "0.4"
+serde_json = "1"
 
 [profile.release]
 opt-level = 3
