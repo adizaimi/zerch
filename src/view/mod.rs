@@ -5,6 +5,7 @@
 pub mod displayed;
 pub mod highlight;
 pub mod jsonline;
+pub mod shell;
 pub mod state;
 
 /// Highlight colours, assigned round-robin as highlights are added. Kept here (not
