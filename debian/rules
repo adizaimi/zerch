@@ -1,5 +1,19 @@
 #!/usr/bin/make -f
-# Build with debhelper + dh-cargo (the Rust build system helper).
+# Build the binary directly with cargo. We intentionally do NOT use dh-cargo:
+# it expects a debcargo-style tree (debian/cargo-checksum.json, vendored crate
+# registry) and is meant for packaging library crates, not a standalone binary.
 
 %:
-	dh $@ --buildsystem cargo
+	dh $@
+
+override_dh_auto_build:
+	cargo build --release --locked
+
+override_dh_auto_test:
+	cargo test --release --locked
+
+override_dh_auto_install:
+	install -D -m0755 target/release/zercher debian/zercher/usr/bin/zercher
+
+override_dh_auto_clean:
+	cargo clean

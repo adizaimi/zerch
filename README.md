@@ -113,17 +113,18 @@ sudo apt install ./target/debian/zercher_*.deb
 
 ### Native source package: `debian/`
 
-A standard debhelper + `dh-cargo` source package lives in `debian/` (required at the
-repo root by `dpkg-buildpackage`):
+A debhelper source package lives in `debian/` (required at the repo root by
+`dpkg-buildpackage`). It builds the binary directly with `cargo` (not `dh-cargo`):
 
 ```
-sudo apt install devscripts debhelper dh-cargo
+sudo apt install devscripts debhelper cargo rustc
 dpkg-buildpackage -us -uc -b     # → ../zercher_0.1.0_<arch>.deb
 ```
 
-Note: a Debian build runs offline, so the crate dependencies must be available —
-either the Rust crates packaged in your Debian release, or vendored first with
-`cargo vendor` (plus a `.cargo/config.toml` pointing at the vendor dir).
+`cargo` fetches the crate dependencies during the build, so the build host needs
+network access — or vendor them first with `cargo vendor` and a `.cargo/config.toml`
+pointing at the vendor dir. Also ensure the toolchain satisfies the crate's
+`rust-version`; if your distro's `rustc` is too old, put a rustup toolchain on `PATH`.
 
 Both paths install the binary to `/usr/bin/zercher` and the man page to
 `/usr/share/man/man1/zercher.1`.

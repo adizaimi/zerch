@@ -4,9 +4,8 @@ Priority: optional
 Maintainer: Adi Zaimi <adizaimi@yahoo.com>
 Build-Depends:
  debhelper-compat (= 13),
- dh-cargo,
- cargo:native,
- rustc:native,
+ cargo,
+ rustc,
  libstd-rust-dev
 Standards-Version: 4.7.0
 Rules-Requires-Root: no
