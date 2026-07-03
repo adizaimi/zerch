@@ -11,7 +11,7 @@ use crate::view::jsonline::{format_json, parse_json_line};
 use crate::view::shell::{build_shell_command, ShellCommandOptions, ShellFilter};
 use crate::view::state::{serialize_view, FilterEntry, FilterMode, HighlightEntry, ViewState};
 use crate::view::HIGHLIGHT_PALETTE;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -52,6 +52,12 @@ pub struct App {
     file_name: String,
     total: usize,
     displayed: Option<Vec<DisplayedItem>>,
+    // line number → position in `displayed`, rebuilt whenever `displayed` changes,
+    // so pos_of_line / in_view are O(1) rather than a linear scan.
+    line_to_pos: HashMap<usize, usize>,
+    // Cached search matches that fall in the current view (rebuilt on search /
+    // view change), so the status bar doesn't recompute it every frame.
+    miv: Vec<usize>,
 
     pos: usize,
     cursor: usize,
@@ -101,6 +107,8 @@ impl App {
             file_name,
             total,
             displayed: None,
+            line_to_pos: HashMap::new(),
+            miv: Vec::new(),
             pos: 0,
             cursor: 0,
             hscroll: 0,
@@ -186,18 +194,37 @@ impl App {
     }
 
     fn in_view(&self, ln: usize) -> bool {
-        match &self.displayed {
-            Some(_) => self.pos_of_line(ln).is_some(),
-            None => ln >= 1 && ln <= self.total,
-        }
+        self.pos_of_line(ln).is_some()
     }
 
     fn pos_of_line(&self, ln: usize) -> Option<usize> {
         match &self.displayed {
-            Some(d) => d
-                .iter()
-                .position(|it| matches!(it, DisplayedItem::Line(x) if *x == ln)),
+            Some(_) => self.line_to_pos.get(&ln).copied(),
             None => (ln >= 1 && ln <= self.total).then(|| ln - 1),
+        }
+    }
+
+    // Rebuild the line→position index and the cached in-view match list. Called
+    // whenever `displayed` or `matches` change (never per render frame).
+    fn rebuild_line_index(&mut self) {
+        self.line_to_pos.clear();
+        if let Some(d) = &self.displayed {
+            for (i, it) in d.iter().enumerate() {
+                if let DisplayedItem::Line(n) = it {
+                    self.line_to_pos.insert(*n, i);
+                }
+            }
+        }
+    }
+
+    fn refresh_matches_in_view(&mut self) {
+        self.miv = if self.search_term.is_empty() {
+            Vec::new()
+        } else {
+            self.matches.iter().copied().filter(|&l| self.in_view(l)).collect()
+        };
+        if self.match_idx >= self.miv.len() {
+            self.match_idx = 0;
         }
     }
 
@@ -285,13 +312,6 @@ impl App {
 
     // --- search ---------------------------------------------------------------
 
-    fn matches_in_view(&self) -> Vec<usize> {
-        if self.search_term.is_empty() {
-            return Vec::new();
-        }
-        self.matches.iter().copied().filter(|&l| self.in_view(l)).collect()
-    }
-
     fn run_search(&mut self, term: &str) {
         self.mode = Mode::Normal;
         if term.is_empty() {
@@ -303,6 +323,7 @@ impl App {
         if self.search_regex && bad_regex(term) {
             self.search_error = Some("bad regex");
             self.matches.clear();
+            self.refresh_matches_in_view();
             return;
         }
         self.search_error = None;
@@ -310,31 +331,29 @@ impl App {
             .case(self.search_case)
             .rx(self.search_regex)];
         match search(&self.index, &stack, &Scope::default()) {
-            Ok(res) => {
-                self.matches = res.matching_lines;
-                if let Some(&first) = self.matches.iter().find(|&&l| self.in_view(l)) {
-                    if let Some(p) = self.pos_of_line(first) {
-                        self.jump_to(p as i64);
-                    }
-                    self.scroll_to_col(first);
-                }
-            }
+            Ok(res) => self.matches = res.matching_lines,
             Err(_) => {
                 self.matches.clear();
                 self.search_error = Some("error");
             }
         }
+        self.refresh_matches_in_view();
+        if let Some(&first) = self.miv.first() {
+            if let Some(p) = self.pos_of_line(first) {
+                self.jump_to(p as i64);
+            }
+            self.scroll_to_col(first);
+        }
     }
 
     fn goto_match(&mut self, idx: i64) {
-        let miv = self.matches_in_view();
-        if miv.is_empty() {
+        if self.miv.is_empty() {
             return;
         }
-        let len = miv.len() as i64;
+        let len = self.miv.len() as i64;
         let wrapped = ((idx % len) + len) % len;
         self.match_idx = wrapped as usize;
-        let line = miv[wrapped as usize];
+        let line = self.miv[wrapped as usize];
         if let Some(p) = self.pos_of_line(line) {
             self.jump_to(p as i64);
         }
@@ -401,18 +420,20 @@ impl App {
 
         if enabled.is_empty() && self.time_range.is_none() {
             self.displayed = None;
-            return;
+        } else {
+            let scope = Scope {
+                time_range: self.time_range,
+                levels: Vec::new(),
+            };
+            let matches = search(&self.index, &enabled, &scope)
+                .map(|r| r.matching_lines)
+                .unwrap_or_default();
+            let bm: Vec<usize> = self.bookmarks.iter().copied().collect();
+            let vis: Vec<usize> = self.visible_lines.iter().copied().collect();
+            self.displayed = Some(build_displayed_items(&matches, &bm, &[], &vis, self.total));
         }
-        let scope = Scope {
-            time_range: self.time_range,
-            levels: Vec::new(),
-        };
-        let matches = search(&self.index, &enabled, &scope)
-            .map(|r| r.matching_lines)
-            .unwrap_or_default();
-        let bm: Vec<usize> = self.bookmarks.iter().copied().collect();
-        let vis: Vec<usize> = self.visible_lines.iter().copied().collect();
-        self.displayed = Some(build_displayed_items(&matches, &bm, &[], &vis, self.total));
+        self.rebuild_line_index();
+        self.refresh_matches_in_view();
     }
 
     // Recompute, then keep the cursor on the same source line when possible.
@@ -1130,6 +1151,7 @@ impl App {
                 self.search_term.clear();
                 self.matches.clear();
                 self.search_error = None;
+                self.refresh_matches_in_view();
             }
             _ => {}
         }
@@ -1342,7 +1364,7 @@ impl App {
         };
         let mut s = format!(" {}   {}/{}   ", self.file_name, here, self.total);
         if !self.search_term.is_empty() {
-            let miv = self.matches_in_view().len();
+            let miv = self.miv.len();
             match self.search_error {
                 Some(e) => s.push_str(&format!("/{}: {}  ", self.search_term, e)),
                 None => s.push_str(&format!("/{} {}/{}  ", self.search_term, self.match_idx + 1, miv)),
