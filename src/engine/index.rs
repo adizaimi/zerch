@@ -158,6 +158,61 @@ impl LineIndex {
     pub fn level_of(&self, n: usize) -> Level {
         self.levels.get(n.wrapping_sub(1)).copied().unwrap_or(LEVEL_NONE)
     }
+
+    /// `(min_ts, max_ts, count)` over timestamped lines, or `None` if none carry a
+    /// timestamp.
+    pub fn time_bounds(&self) -> Option<(i64, i64, usize)> {
+        let mut min = i64::MAX;
+        let mut max = i64::MIN;
+        let mut count = 0usize;
+        for &t in &self.ts {
+            if t != NO_TS {
+                min = min.min(t);
+                max = max.max(t);
+                count += 1;
+            }
+        }
+        (count > 0).then_some((min, max, count))
+    }
+
+    /// Bucket the timestamped lines into `buckets` bins for the histogram: a count
+    /// and the most-severe level per bucket. `None` if the file has no timestamps.
+    pub fn histogram(&self, buckets: usize) -> Option<Histogram> {
+        let (min_ts, max_ts, _) = self.time_bounds()?;
+        let buckets = buckets.max(1);
+        let span = (max_ts - min_ts + 1).max(1);
+        let bucket_ms = ((span + buckets as i64 - 1) / buckets as i64).max(1);
+        let mut counts = vec![0u64; buckets];
+        let mut max_level = vec![LEVEL_NONE; buckets];
+        for (i, &t) in self.ts.iter().enumerate() {
+            if t == NO_TS {
+                continue;
+            }
+            let b = (((t - min_ts) / bucket_ms) as usize).min(buckets - 1);
+            counts[b] += 1;
+            let lvl = self.levels[i];
+            if lvl > max_level[b] {
+                max_level[b] = lvl;
+            }
+        }
+        Some(Histogram {
+            min_ts,
+            max_ts,
+            bucket_ms,
+            counts,
+            max_level,
+        })
+    }
+}
+
+/// A time histogram: `counts[i]` lines fall in bucket `i` (`bucket_ms` wide,
+/// starting at `min_ts`), with the most-severe level seen in that bucket.
+pub struct Histogram {
+    pub min_ts: i64,
+    pub max_ts: i64,
+    pub bucket_ms: i64,
+    pub counts: Vec<u64>,
+    pub max_level: Vec<Level>,
 }
 
 fn trim_eol(mut raw: &[u8]) -> &[u8] {
@@ -265,6 +320,24 @@ mod tests {
         let t = std::time::Instant::now();
         let idx = LineIndex::open(path, IndexOptions::default(), |_| {}).unwrap();
         eprintln!("indexed {} lines in {:?}", idx.total_lines(), t.elapsed());
+    }
+
+    #[test]
+    fn histogram_buckets_by_time_and_level() {
+        let mut c = Vec::new();
+        c.extend_from_slice(b"2026-06-20T00:00:00Z INFO a\n");
+        c.extend_from_slice(b"2026-06-20T00:00:00Z ERROR b\n");
+        c.extend_from_slice(b"no timestamp here\n");
+        c.extend_from_slice(b"2026-06-20T02:00:00Z WARN c\n");
+        let idx = open(&c);
+        assert!(idx.time_bounds().is_some());
+        let h = idx.histogram(2).unwrap();
+        assert_eq!(h.counts.iter().sum::<u64>(), 3); // only timestamped lines
+        assert_eq!(h.max_level[0], 5); // bucket 0 holds INFO+ERROR → ERROR
+
+        let plain = open(b"a\nb\nc\n");
+        assert!(plain.time_bounds().is_none());
+        assert!(plain.histogram(4).is_none());
     }
 
     #[test]
