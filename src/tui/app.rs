@@ -2,7 +2,7 @@
 //! highlighting, and rendering. Filters / bookmarks / gap-reveal and overlays
 //! layer on in the following commits/phases.
 
-use crate::engine::index::LineIndex;
+use crate::engine::index::{Histogram, LineIndex};
 use crate::engine::search::{search, Op, Scope, SearchTerm};
 use crate::levels::{hex_rgb, level_rgb};
 use crate::view::displayed::{build_displayed_items, DisplayedItem};
@@ -20,7 +20,7 @@ use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 const HINT: &str =
-    "j/k move · f/b page · /search n/N · F filter · h hl · B mark · [ ] · w wrap · q quit";
+    "j/k f/b · /search n/N · F filter h hl B mark · T hist m menu · w wrap ? help q quit";
 const CURSOR_BG: Color = Color::Indexed(236);
 const SEARCH_HISTORY_MAX: usize = 50;
 const EXPAND_CHUNK: usize = 5;
@@ -31,7 +31,10 @@ pub enum Mode {
     Search,
     Highlight,
     Filter,
+    Hist,
 }
+
+const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 // A full-screen overlay above the viewport. Text overlays (view string / shell
 // command) carry their own content; the rest render from a source line.
@@ -76,6 +79,10 @@ pub struct App {
     bookmarks: BTreeSet<usize>,
     visible_lines: BTreeSet<usize>,
     time_range: Option<(i64, i64)>,
+    show_hist: bool,
+    hist: Option<Histogram>,
+    hist_cursor: usize,
+    hist_anchor: usize,
 
     overlay: Overlay,
     overlay_scroll: usize,
@@ -116,6 +123,10 @@ impl App {
             bookmarks: BTreeSet::new(),
             visible_lines: BTreeSet::new(),
             time_range: None,
+            show_hist: false,
+            hist: None,
+            hist_cursor: 0,
+            hist_anchor: 0,
             overlay: Overlay::None,
             overlay_scroll: 0,
             overlay_avail: 0,
@@ -583,6 +594,123 @@ impl App {
         f.render_widget(Paragraph::new(visible).block(block), area);
     }
 
+    // --- histogram / time brush ----------------------------------------------
+
+    fn toggle_hist(&mut self) {
+        if self.show_hist {
+            self.show_hist = false;
+            self.hist = None;
+            self.time_range = None;
+            self.mode = Mode::Normal;
+            self.recompute();
+            self.pos = 0;
+            self.cursor = 0;
+        } else if self.index.time_bounds().is_some() {
+            self.show_hist = true;
+            self.hist_cursor = 0;
+            self.hist_anchor = 0;
+            self.mode = Mode::Hist;
+        }
+    }
+
+    fn ensure_hist(&mut self, buckets: usize) {
+        if self.hist.as_ref().map(|h| h.counts.len()) != Some(buckets) {
+            self.hist = self.index.histogram(buckets);
+        }
+        if let Some(h) = &self.hist {
+            let m = h.counts.len().saturating_sub(1);
+            self.hist_cursor = self.hist_cursor.min(m);
+            self.hist_anchor = self.hist_anchor.min(m);
+        }
+    }
+
+    fn apply_time_brush(&mut self) {
+        if let Some(h) = &self.hist {
+            let lo = self.hist_anchor.min(self.hist_cursor) as i64;
+            let hi = self.hist_anchor.max(self.hist_cursor) as i64;
+            self.time_range = Some((
+                h.min_ts + lo * h.bucket_ms,
+                h.min_ts + (hi + 1) * h.bucket_ms - 1,
+            ));
+        }
+        self.recompute();
+        self.pos = 0;
+        self.cursor = 0;
+        self.mode = Mode::Normal;
+    }
+
+    fn handle_hist_key(&mut self, key: KeyEvent) {
+        let n = self.hist.as_ref().map(|h| h.counts.len()).unwrap_or(0);
+        match key.code {
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.hist_cursor = self.hist_cursor.saturating_sub(1)
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                if n > 0 {
+                    self.hist_cursor = (self.hist_cursor + 1).min(n - 1);
+                }
+            }
+            KeyCode::Char('a') => self.hist_anchor = self.hist_cursor,
+            KeyCode::Char('c') => {
+                self.time_range = None;
+                self.recompute();
+                self.pos = 0;
+                self.cursor = 0;
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => self.apply_time_brush(),
+            KeyCode::Char('T') => self.toggle_hist(),
+            KeyCode::Esc => self.mode = Mode::Normal,
+            _ => {}
+        }
+    }
+
+    fn hist_selection(&self) -> (Option<usize>, Option<usize>) {
+        if self.mode == Mode::Hist {
+            return (
+                Some(self.hist_anchor.min(self.hist_cursor)),
+                Some(self.hist_anchor.max(self.hist_cursor)),
+            );
+        }
+        if let (Some(h), Some((from, to))) = (&self.hist, self.time_range) {
+            let m = h.counts.len().saturating_sub(1);
+            let lo = (((from - h.min_ts) / h.bucket_ms).max(0) as usize).min(m);
+            let hi = (((to - h.min_ts) / h.bucket_ms).max(0) as usize).min(m);
+            return (Some(lo), Some(hi));
+        }
+        (None, None)
+    }
+
+    fn hist_line(&self) -> Line<'static> {
+        let Some(h) = &self.hist else {
+            return Line::from(String::new());
+        };
+        let max = h.counts.iter().copied().max().unwrap_or(1).max(1);
+        let (lo, hi) = self.hist_selection();
+        let mut spans = Vec::with_capacity(h.counts.len());
+        for (i, &c) in h.counts.iter().enumerate() {
+            let level_h = if c == 0 {
+                0
+            } else {
+                (((c as f64 / max as f64) * 8.0).round() as usize).clamp(1, 8)
+            };
+            let mut st = match level_rgb(h.max_level[i]) {
+                Some((r, g, b)) => Style::default().fg(Color::Rgb(r, g, b)),
+                None => Style::default().fg(Color::DarkGray),
+            };
+            if let (Some(a), Some(b)) = (lo, hi) {
+                if i >= a && i <= b {
+                    st = st.add_modifier(Modifier::REVERSED);
+                }
+            }
+            if self.mode == Mode::Hist && i == self.hist_cursor {
+                st = st.add_modifier(Modifier::BOLD);
+            }
+            spans.push(Span::styled(BLOCKS[level_h].to_string(), st));
+        }
+        Line::from(spans)
+    }
+
     // --- menu -----------------------------------------------------------------
 
     fn sel_filter(&self) -> Option<usize> {
@@ -816,6 +944,10 @@ impl App {
                 return;
             }
         }
+        if self.mode == Mode::Hist {
+            self.handle_hist_key(key);
+            return;
+        }
         if self.mode != Mode::Normal {
             self.handle_input_key(key, ctrl);
             return;
@@ -845,7 +977,7 @@ impl App {
                         self.add_filter(&term);
                         self.mode = Mode::Normal;
                     }
-                    Mode::Normal => {}
+                    Mode::Normal | Mode::Hist => {}
                 }
                 self.input.clear();
                 self.search_hist_idx = -1;
@@ -950,6 +1082,12 @@ impl App {
                 self.overlay = Overlay::Menu;
                 self.menu_sel = 0;
             }
+            KeyCode::Char('T') => self.toggle_hist(),
+            KeyCode::Char('t') => {
+                if self.show_hist {
+                    self.mode = Mode::Hist;
+                }
+            }
             KeyCode::Esc => {
                 self.search_term.clear();
                 self.matches.clear();
@@ -973,21 +1111,36 @@ impl App {
                 return;
             }
         }
-        let chunks = Layout::vertical([
-            Constraint::Min(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(f.area());
-        self.width = chunks[0].width;
-        self.height = chunks[0].height as usize;
-
-        f.render_widget(Paragraph::new(self.build_rows()), chunks[0]);
-        f.render_widget(
-            Paragraph::new(self.status_line()).style(Style::default().add_modifier(Modifier::REVERSED)),
-            chunks[1],
-        );
-        f.render_widget(Paragraph::new(self.prompt_line()), chunks[2]);
+        let area = f.area();
+        let status_style = Style::default().add_modifier(Modifier::REVERSED);
+        if self.show_hist {
+            let ch = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
+            self.ensure_hist(ch[0].width as usize);
+            f.render_widget(Paragraph::new(self.hist_line()), ch[0]);
+            self.width = ch[1].width;
+            self.height = ch[1].height as usize;
+            f.render_widget(Paragraph::new(self.build_rows()), ch[1]);
+            f.render_widget(Paragraph::new(self.status_line()).style(status_style), ch[2]);
+            f.render_widget(Paragraph::new(self.prompt_line()), ch[3]);
+        } else {
+            let ch = Layout::vertical([
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
+            self.width = ch[0].width;
+            self.height = ch[0].height as usize;
+            f.render_widget(Paragraph::new(self.build_rows()), ch[0]);
+            f.render_widget(Paragraph::new(self.status_line()).style(status_style), ch[1]);
+            f.render_widget(Paragraph::new(self.prompt_line()), ch[2]);
+        }
     }
 
     fn gutter_width(&self) -> usize {
@@ -1198,6 +1351,10 @@ impl App {
                     Style::default().fg(Color::DarkGray),
                 ),
             ]),
+            Mode::Hist => Line::from(Span::styled(
+                "time brush: ←/→ move · a anchor · Enter apply · c clear · T/Esc close",
+                Style::default().fg(Color::DarkGray),
+            )),
             Mode::Normal => Line::from(Span::styled(HINT, Style::default().fg(Color::DarkGray))),
         }
     }
@@ -1478,6 +1635,26 @@ mod tests {
         for l in 3..=7 {
             assert!(app.visible_lines.contains(&l), "line {l} should be revealed");
         }
+    }
+
+    #[test]
+    fn time_brush_filters_to_bucket() {
+        let mut app = app_from(&[
+            "2026-06-20T00:00:00Z a",
+            "2026-06-20T00:00:00Z b",
+            "no timestamp",
+            "2026-06-20T05:00:00Z c",
+        ]);
+        app.toggle_hist();
+        assert!(app.show_hist);
+        app.ensure_hist(4);
+        app.hist_cursor = 0;
+        app.hist_anchor = 0;
+        app.apply_time_brush();
+        assert!(app.time_range.is_some());
+        let lines = displayed_lines(&app);
+        assert!(lines.contains(&1) && lines.contains(&2));
+        assert!(!lines.contains(&4)); // 5h line is in a later bucket
     }
 
     #[test]
