@@ -5,10 +5,11 @@
 use crate::engine::index::LineIndex;
 use crate::engine::search::{search, Op, Scope, SearchTerm};
 use crate::levels::{hex_rgb, level_rgb};
-use crate::view::displayed::DisplayedItem;
+use crate::view::displayed::{build_displayed_items, DisplayedItem};
 use crate::view::highlight::{build_spans, match_ranges, HighlightSpec};
-use crate::view::state::HighlightEntry;
+use crate::view::state::{FilterEntry, FilterMode, HighlightEntry};
 use crate::view::HIGHLIGHT_PALETTE;
+use std::collections::BTreeSet;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -16,15 +17,18 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-const HINT: &str = "j/k move · f/b page · ←/→ pan · w wrap · /search n/N · h hl · g/G · q quit";
+const HINT: &str =
+    "j/k move · f/b page · /search n/N · F filter · h hl · B mark · [ ] · w wrap · q quit";
 const CURSOR_BG: Color = Color::Indexed(236);
 const SEARCH_HISTORY_MAX: usize = 50;
+const EXPAND_CHUNK: usize = 5;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
     Search,
     Highlight,
+    Filter,
 }
 
 pub struct App {
@@ -54,6 +58,11 @@ pub struct App {
     search_hist_idx: i64, // -1 = not browsing
 
     highlights: Vec<HighlightEntry>,
+    filters: Vec<FilterEntry>,
+    filter_mode: FilterMode,
+    bookmarks: BTreeSet<usize>,
+    visible_lines: BTreeSet<usize>,
+    time_range: Option<(i64, i64)>,
 
     confirm_quit: bool,
     pub should_quit: bool,
@@ -84,6 +93,11 @@ impl App {
             search_history: Vec::new(),
             search_hist_idx: -1,
             highlights: Vec::new(),
+            filters: Vec::new(),
+            filter_mode: FilterMode::And,
+            bookmarks: BTreeSet::new(),
+            visible_lines: BTreeSet::new(),
+            time_range: None,
             confirm_quit: false,
             should_quit: false,
         }
@@ -286,6 +300,139 @@ impl App {
         });
     }
 
+    // --- filters / bookmarks / gaps -------------------------------------------
+
+    fn current_line(&self) -> Option<usize> {
+        match self.item_at(self.cursor) {
+            DisplayedItem::Line(n) => Some(n),
+            DisplayedItem::Gap { .. } => None,
+        }
+    }
+
+    // Rebuild the displayed sequence from the active filters + forced-visible lines.
+    // `displayed` is `None` (show everything) unless a filter or time range is active.
+    fn recompute(&mut self) {
+        let op = match self.filter_mode {
+            FilterMode::And => Op::And,
+            FilterMode::Or => Op::Or,
+        };
+        let enabled: Vec<SearchTerm> = self
+            .filters
+            .iter()
+            .filter(|f| f.enabled && !f.term.is_empty() && !(f.regex && bad_regex(&f.term)))
+            .map(|f| {
+                SearchTerm::new(&f.term, op)
+                    .case(f.case_sensitive)
+                    .rx(f.regex)
+                    .neg(f.negate)
+            })
+            .collect();
+
+        if enabled.is_empty() && self.time_range.is_none() {
+            self.displayed = None;
+            return;
+        }
+        let scope = Scope {
+            time_range: self.time_range,
+            levels: Vec::new(),
+        };
+        let matches = search(&self.index, &enabled, &scope)
+            .map(|r| r.matching_lines)
+            .unwrap_or_default();
+        let bm: Vec<usize> = self.bookmarks.iter().copied().collect();
+        let vis: Vec<usize> = self.visible_lines.iter().copied().collect();
+        self.displayed = Some(build_displayed_items(&matches, &bm, &[], &vis, self.total));
+    }
+
+    // Recompute, then keep the cursor on the same source line when possible.
+    fn refresh_preserving(&mut self) {
+        let ln = self.current_line();
+        self.recompute();
+        match ln.and_then(|l| self.pos_of_line(l)) {
+            Some(p) => self.jump_to(p as i64),
+            None => {
+                self.cursor = self.cursor.min(self.count().saturating_sub(1));
+                self.pos = self.clamp_pos(self.pos as i64);
+            }
+        }
+    }
+
+    fn add_filter(&mut self, term: &str) {
+        if term.is_empty() {
+            return;
+        }
+        self.filters.push(FilterEntry {
+            term: term.to_string(),
+            enabled: true,
+            case_sensitive: false,
+            regex: false,
+            negate: false,
+        });
+        self.recompute();
+        self.pos = 0;
+        self.cursor = 0;
+    }
+
+    fn toggle_filter_mode(&mut self) {
+        self.filter_mode = match self.filter_mode {
+            FilterMode::And => FilterMode::Or,
+            FilterMode::Or => FilterMode::And,
+        };
+        self.refresh_preserving();
+    }
+
+    fn toggle_bookmark(&mut self) {
+        if let DisplayedItem::Line(n) = self.item_at(self.cursor) {
+            if !self.bookmarks.insert(n) {
+                self.bookmarks.remove(&n);
+            }
+            // Bookmarks are forced-visible only within a filtered view.
+            if self.displayed.is_some() {
+                self.refresh_preserving();
+            }
+        }
+    }
+
+    fn goto_bookmark(&mut self, forward: bool) {
+        if self.bookmarks.is_empty() {
+            return;
+        }
+        let cur = self.current_line().unwrap_or(0);
+        let sorted: Vec<usize> = self.bookmarks.iter().copied().collect();
+        let target = if forward {
+            sorted.iter().find(|&&b| b > cur).copied().or_else(|| sorted.first().copied())
+        } else {
+            sorted.iter().rev().find(|&&b| b < cur).copied().or_else(|| sorted.last().copied())
+        };
+        if let Some(t) = target {
+            if let Some(p) = self.pos_of_line(t) {
+                self.jump_to(p as i64);
+            }
+        }
+    }
+
+    fn gap_action(&mut self, from_top: bool) {
+        if let DisplayedItem::Gap { start, end } = self.item_at(self.cursor) {
+            let (lo, hi) = if from_top {
+                (start, (start + EXPAND_CHUNK - 1).min(end))
+            } else {
+                (end.saturating_sub(EXPAND_CHUNK - 1).max(start), end)
+            };
+            for i in lo..=hi {
+                self.visible_lines.insert(i);
+            }
+            self.recompute();
+            let focus = if from_top { lo } else { hi };
+            match self.pos_of_line(focus) {
+                Some(p) => self.jump_to(p as i64),
+                None => {
+                    self.cursor = self.cursor.min(self.count().saturating_sub(1));
+                    self.pos = self.clamp_pos(self.pos as i64);
+                }
+            }
+        }
+    }
+
     // --- key handling ---------------------------------------------------------
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -327,6 +474,10 @@ impl App {
                     Mode::Search => self.run_search(&term),
                     Mode::Highlight => {
                         self.add_highlight(&term);
+                        self.mode = Mode::Normal;
+                    }
+                    Mode::Filter => {
+                        self.add_filter(&term);
                         self.mode = Mode::Normal;
                     }
                     Mode::Normal => {}
@@ -413,8 +564,18 @@ impl App {
                 self.mode = Mode::Highlight;
                 self.input.clear();
             }
+            KeyCode::Char('F') => {
+                self.mode = Mode::Filter;
+                self.input.clear();
+            }
             KeyCode::Char('n') => self.goto_match(self.match_idx as i64 + 1),
             KeyCode::Char('N') => self.goto_match(self.match_idx as i64 - 1),
+            KeyCode::Char('B') => self.toggle_bookmark(),
+            KeyCode::Char('[') => self.goto_bookmark(false),
+            KeyCode::Char(']') => self.goto_bookmark(true),
+            KeyCode::Char('o') => self.toggle_filter_mode(),
+            KeyCode::Enter | KeyCode::Char('+') | KeyCode::Char('=') => self.gap_action(true),
+            KeyCode::Char('-') | KeyCode::Char('_') => self.gap_action(false),
             KeyCode::Esc => {
                 self.search_term.clear();
                 self.matches.clear();
@@ -526,9 +687,13 @@ impl App {
         content_w: usize,
     ) {
         let styled = self.style_line(n);
-        let num_style = match level_rgb(self.index.level_of(n)) {
-            Some((r, g, b)) => Style::default().fg(Color::Rgb(r, g, b)),
-            None => Style::default().fg(Color::DarkGray),
+        let num_style = if self.bookmarks.contains(&n) {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            match level_rgb(self.index.level_of(n)) {
+                Some((r, g, b)) => Style::default().fg(Color::Rgb(r, g, b)),
+                None => Style::default().fg(Color::DarkGray),
+            }
         };
         let num = format!("{n:>gutter$}");
         let blank = " ".repeat(gutter);
@@ -639,6 +804,14 @@ impl App {
             Mode::Highlight => Line::from(vec![
                 Span::raw(format!("highlight: {}", self.input)),
                 Span::styled("▏", Style::default().add_modifier(Modifier::REVERSED)),
+            ]),
+            Mode::Filter => Line::from(vec![
+                Span::raw(format!("filter: {}", self.input)),
+                Span::styled("▏", Style::default().add_modifier(Modifier::REVERSED)),
+                Span::styled(
+                    format!("  [{}]", if self.filter_mode == FilterMode::And { "AND" } else { "OR" }),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]),
             Mode::Normal => Line::from(Span::styled(HINT, Style::default().fg(Color::DarkGray))),
         }
@@ -756,6 +929,63 @@ mod tests {
         assert_eq!(app.input, "aaa");
         app.history_recall(-1);
         assert_eq!(app.input, "bbb");
+    }
+
+    fn displayed_lines(app: &App) -> Vec<usize> {
+        app.displayed
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter_map(|it| match it {
+                DisplayedItem::Line(n) => Some(*n),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn filter_builds_displayed_with_gaps() {
+        let mut app = app_from(&["aaa", "bbb match", "ccc", "ddd match", "eee"]);
+        app.add_filter("match");
+        assert!(app.displayed.is_some());
+        assert_eq!(displayed_lines(&app), vec![2, 4]);
+        // AND->OR toggle keeps the (single-term) result here.
+        app.toggle_filter_mode();
+        assert_eq!(displayed_lines(&app), vec![2, 4]);
+    }
+
+    #[test]
+    fn bookmark_toggle_and_nav() {
+        let mut app = app_n(10);
+        app.cursor = 2; // line 3
+        app.toggle_bookmark();
+        assert!(app.bookmarks.contains(&3));
+        app.cursor = 6; // line 7
+        app.toggle_bookmark();
+        app.cursor = 0;
+        app.goto_bookmark(true);
+        assert_eq!(app.current_line(), Some(3));
+        app.goto_bookmark(true);
+        assert_eq!(app.current_line(), Some(7));
+        app.cursor = 2;
+        app.toggle_bookmark();
+        assert!(!app.bookmarks.contains(&3));
+    }
+
+    #[test]
+    fn gap_reveal_expands_visible() {
+        let mut app = app_from(&["a", "b M", "c", "d", "e", "f", "g", "h M", "i", "j"]);
+        app.add_filter("M"); // matches lines 2 and 8
+        let d = app.displayed.as_ref().unwrap().clone();
+        let gap_pos = d
+            .iter()
+            .position(|it| matches!(it, DisplayedItem::Gap { start: 3, .. }))
+            .unwrap();
+        app.cursor = gap_pos;
+        app.gap_action(true);
+        for l in 3..=7 {
+            assert!(app.visible_lines.contains(&l), "line {l} should be revealed");
+        }
     }
 
     #[test]
