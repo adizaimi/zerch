@@ -97,6 +97,8 @@ pub struct App {
 
     confirm_quit: bool,
     pub should_quit: bool,
+    /// Set on Ctrl-Z; the run loop suspends the process to the background.
+    pub suspend: bool,
 }
 
 impl App {
@@ -141,6 +143,7 @@ impl App {
             menu_sel: 0,
             confirm_quit: false,
             should_quit: false,
+            suspend: false,
         }
     }
 
@@ -983,6 +986,10 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && matches!(key.code, KeyCode::Char('c')) {
             self.should_quit = true;
+            return;
+        }
+        if ctrl && matches!(key.code, KeyCode::Char('z')) {
+            self.suspend = true;
             return;
         }
         if self.confirm_quit {

@@ -41,7 +41,36 @@ pub fn run(index: LineIndex, file_name: String, initial_view: Option<ViewState>)
         terminal.draw(|f| app.render(f))?;
         if let Event::Key(key) = event::read()? {
             app.handle_key(key);
+            if app.suspend {
+                app.suspend = false;
+                suspend_to_background(&mut terminal)?;
+            }
         }
     }
     Ok(())
+}
+
+// Ctrl-Z: restore the terminal, stop ourselves with SIGTSTP (so the shell regains
+// control), then re-enter raw mode + alt screen when brought back with `fg`.
+#[cfg(unix)]
+fn suspend_to_background(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+) -> io::Result<()> {
+    disable_raw_mode()?;
+    execute!(io::stdout(), LeaveAlternateScreen)?;
+    // Deliver the default job-control stop; returns after SIGCONT (`fg`).
+    unsafe {
+        libc::raise(libc::SIGTSTP);
+    }
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    terminal.clear()?; // force a full repaint of the restored screen
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn suspend_to_background(
+    _terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+) -> io::Result<()> {
+    Ok(()) // no SIGTSTP equivalent; Ctrl-Z is a no-op
 }

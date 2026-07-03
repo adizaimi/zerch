@@ -1009,6 +1009,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "form_urlencoded",
+ "libc",
  "memchr",
  "memmap2",
  "ratatui",
