@@ -6,15 +6,17 @@ use crate::engine::index::LineIndex;
 use crate::engine::search::{search, Op, Scope, SearchTerm};
 use crate::levels::{hex_rgb, level_rgb};
 use crate::view::displayed::{build_displayed_items, DisplayedItem};
-use crate::view::highlight::{build_spans, match_ranges, HighlightSpec};
-use crate::view::state::{FilterEntry, FilterMode, HighlightEntry};
+use crate::view::highlight::{build_spans, color_json_line, match_ranges, HighlightSpec};
+use crate::view::jsonline::{format_json, parse_json_line};
+use crate::view::shell::{build_shell_command, ShellCommandOptions, ShellFilter};
+use crate::view::state::{serialize_view, FilterEntry, FilterMode, HighlightEntry, ViewState};
 use crate::view::HIGHLIGHT_PALETTE;
 use std::collections::BTreeSet;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 const HINT: &str =
@@ -29,6 +31,17 @@ pub enum Mode {
     Search,
     Highlight,
     Filter,
+}
+
+// A full-screen overlay above the viewport. Text overlays (view string / shell
+// command) carry their own content; the rest render from a source line.
+enum Overlay {
+    None,
+    Json(usize),
+    Line(usize),
+    Help,
+    Text { title: String, body: Vec<String> },
+    Menu,
 }
 
 pub struct App {
@@ -64,6 +77,11 @@ pub struct App {
     visible_lines: BTreeSet<usize>,
     time_range: Option<(i64, i64)>,
 
+    overlay: Overlay,
+    overlay_scroll: usize,
+    overlay_avail: usize, // last-rendered overlay inner height
+    menu_sel: usize,
+
     confirm_quit: bool,
     pub should_quit: bool,
 }
@@ -98,6 +116,10 @@ impl App {
             bookmarks: BTreeSet::new(),
             visible_lines: BTreeSet::new(),
             time_range: None,
+            overlay: Overlay::None,
+            overlay_scroll: 0,
+            overlay_avail: 0,
+            menu_sel: 0,
             confirm_quit: false,
             should_quit: false,
         }
@@ -433,6 +455,338 @@ impl App {
         }
     }
 
+    // --- overlays -------------------------------------------------------------
+
+    fn enter_action(&mut self) {
+        match self.item_at(self.cursor) {
+            DisplayedItem::Gap { .. } => self.gap_action(true),
+            DisplayedItem::Line(n) => self.open_line(n),
+        }
+    }
+
+    // Enter on a line: JSON → JSON view; too-long-to-fit → wrapped view; else no-op.
+    fn open_line(&mut self, n: usize) {
+        let content = self.index.get_line(n);
+        if parse_json_line(&content).is_some() {
+            self.overlay = Overlay::Json(n);
+            self.overlay_scroll = 0;
+            return;
+        }
+        let clean = content.replace('\t', "  ");
+        if clean.chars().count() > self.content_width() {
+            self.overlay = Overlay::Line(n);
+            self.overlay_scroll = 0;
+        }
+    }
+
+    fn handle_scroll_overlay_key(&mut self, key: KeyEvent) {
+        let avail = self.overlay_avail.max(1);
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => self.overlay = Overlay::None,
+            KeyCode::Char('j') | KeyCode::Down => self.overlay_scroll += 1,
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.overlay_scroll = self.overlay_scroll.saturating_sub(1)
+            }
+            KeyCode::Char(' ') | KeyCode::PageDown => self.overlay_scroll += avail,
+            KeyCode::PageUp => self.overlay_scroll = self.overlay_scroll.saturating_sub(avail),
+            KeyCode::Char('g') => self.overlay_scroll = 0,
+            KeyCode::Char('G') => self.overlay_scroll = usize::MAX / 2, // clamped in render
+            _ => {}
+        }
+    }
+
+    // Per-character styled JSON (syntax base + highlight/search overlay).
+    fn json_styled(&self, line: &str) -> Vec<(char, Style)> {
+        let specs = self.enabled_highlight_specs();
+        let spans = color_json_line(
+            line,
+            &specs,
+            &self.search_term,
+            self.search_case,
+            self.search_regex,
+        );
+        let mut out = Vec::new();
+        for s in spans {
+            let style = if s.search {
+                Style::default().fg(Color::Black).bg(Color::Yellow)
+            } else {
+                let mut st = match &s.color {
+                    Some(c) if c.starts_with('#') => {
+                        let (r, g, b) = hex_rgb(c);
+                        Style::default().fg(Color::Rgb(r, g, b))
+                    }
+                    Some(c) => Style::default().fg(name_color(c)),
+                    None => Style::default(),
+                };
+                if s.hl {
+                    st = st.add_modifier(Modifier::BOLD);
+                }
+                st
+            };
+            for ch in s.text.chars() {
+                out.push((ch, style));
+            }
+        }
+        out
+    }
+
+    fn overlay_lines(&self, inner_w: usize) -> Vec<Line<'static>> {
+        match &self.overlay {
+            Overlay::Json(n) => {
+                let content = self.index.get_line(*n);
+                let mut lines = Vec::new();
+                if let Some(jl) = parse_json_line(&content) {
+                    if !jl.prefix.is_empty() {
+                        lines.push(Line::from(Span::styled(
+                            jl.prefix.clone(),
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
+                    for pl in format_json(&jl.value).lines() {
+                        lines.extend(wrap_styled(&self.json_styled(pl), inner_w));
+                    }
+                }
+                lines
+            }
+            Overlay::Line(n) => wrap_styled(&self.style_line(*n), inner_w),
+            Overlay::Text { body, .. } => {
+                body.iter().flat_map(|l| wrap_plain(l, inner_w)).collect()
+            }
+            Overlay::Help => help_lines(),
+            Overlay::None | Overlay::Menu => Vec::new(),
+        }
+    }
+
+    fn overlay_title(&self) -> String {
+        match &self.overlay {
+            Overlay::Json(n) => format!(" JSON · line {n} · Esc/q close "),
+            Overlay::Line(n) => format!(" line {n} · Esc/q close "),
+            Overlay::Text { title, .. } => format!(" {title} · Esc/q close "),
+            Overlay::Help => " Keys · Esc/q close ".to_string(),
+            Overlay::None | Overlay::Menu => String::new(),
+        }
+    }
+
+    fn render_overlay(&mut self, f: &mut Frame) {
+        let area = f.area();
+        let block = Block::bordered().title(self.overlay_title());
+        let inner = block.inner(area);
+        self.overlay_avail = inner.height as usize;
+        let lines = self.overlay_lines(inner.width as usize);
+        let max = lines.len().saturating_sub(inner.height as usize);
+        self.overlay_scroll = self.overlay_scroll.min(max);
+        let visible: Vec<Line> = lines
+            .into_iter()
+            .skip(self.overlay_scroll)
+            .take(inner.height as usize)
+            .collect();
+        f.render_widget(Paragraph::new(visible).block(block), area);
+    }
+
+    // --- menu -----------------------------------------------------------------
+
+    fn sel_filter(&self) -> Option<usize> {
+        (self.menu_sel < self.filters.len()).then_some(self.menu_sel)
+    }
+    fn sel_highlight(&self) -> Option<usize> {
+        let nf = self.filters.len();
+        (self.menu_sel >= nf && self.menu_sel < nf + self.highlights.len()).then(|| self.menu_sel - nf)
+    }
+
+    fn handle_menu_key(&mut self, key: KeyEvent) {
+        let total = self.filters.len() + self.highlights.len();
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Char('m') | KeyCode::Esc => self.overlay = Overlay::None,
+            KeyCode::Char('j') | KeyCode::Down => {
+                if total > 0 {
+                    self.menu_sel = (self.menu_sel + 1).min(total - 1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => self.menu_sel = self.menu_sel.saturating_sub(1),
+            KeyCode::Char(' ') => {
+                if let Some(i) = self.sel_filter() {
+                    self.filters[i].enabled = !self.filters[i].enabled;
+                    self.refresh_preserving();
+                } else if let Some(j) = self.sel_highlight() {
+                    self.highlights[j].enabled = !self.highlights[j].enabled;
+                }
+            }
+            KeyCode::Char('r') => {
+                if let Some(i) = self.sel_filter() {
+                    self.filters[i].regex = !self.filters[i].regex;
+                    self.refresh_preserving();
+                } else if let Some(j) = self.sel_highlight() {
+                    self.highlights[j].regex = !self.highlights[j].regex;
+                }
+            }
+            KeyCode::Char('i') => {
+                if let Some(i) = self.sel_filter() {
+                    self.filters[i].case_sensitive = !self.filters[i].case_sensitive;
+                    self.refresh_preserving();
+                } else if let Some(j) = self.sel_highlight() {
+                    self.highlights[j].case_sensitive = !self.highlights[j].case_sensitive;
+                }
+            }
+            KeyCode::Char('x') => {
+                if let Some(i) = self.sel_filter() {
+                    self.filters[i].negate = !self.filters[i].negate;
+                    self.refresh_preserving();
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(i) = self.sel_filter() {
+                    self.filters.remove(i);
+                    self.refresh_preserving();
+                } else if let Some(j) = self.sel_highlight() {
+                    self.highlights.remove(j);
+                }
+                let total = self.filters.len() + self.highlights.len();
+                self.menu_sel = self.menu_sel.min(total.saturating_sub(1));
+            }
+            KeyCode::Char('o') => self.toggle_filter_mode(),
+            KeyCode::Char('C') => {
+                self.filters.clear();
+                self.recompute();
+                self.pos = 0;
+                self.cursor = 0;
+                self.menu_sel = 0;
+            }
+            KeyCode::Char('c') => {
+                self.highlights.clear();
+                self.menu_sel = self.menu_sel.min(self.filters.len().saturating_sub(1));
+            }
+            KeyCode::Char('B') => {
+                self.bookmarks.clear();
+                if self.displayed.is_some() {
+                    self.refresh_preserving();
+                }
+            }
+            KeyCode::Char('f') => {
+                self.overlay = Overlay::None;
+                self.mode = Mode::Filter;
+                self.input.clear();
+            }
+            KeyCode::Char('h') => {
+                self.overlay = Overlay::None;
+                self.mode = Mode::Highlight;
+                self.input.clear();
+            }
+            KeyCode::Char('e') => self.export_view(),
+            KeyCode::Char('g') => self.export_shell(),
+            _ => {}
+        }
+    }
+
+    fn current_view(&self) -> ViewState {
+        ViewState {
+            filters: self.filters.clone(),
+            filter_mode: self.filter_mode,
+            highlights: self.highlights.clone(),
+            bookmarks: self.bookmarks.iter().copied().collect(),
+            visible: self.visible_lines.iter().copied().collect(),
+            search: self.search_term.clone(),
+            search_regex: self.search_regex,
+            search_case: self.search_case,
+            selected: self.current_line(),
+        }
+    }
+
+    fn export_view(&mut self) {
+        let s = serialize_view(&self.current_view());
+        let body = if s.is_empty() {
+            vec!["(no filters / highlights / bookmarks / ranges set)".to_string()]
+        } else {
+            vec![s]
+        };
+        self.overlay = Overlay::Text {
+            title: "Shareable view — restore with: zercher <file> --view \"…\"".to_string(),
+            body,
+        };
+        self.overlay_scroll = 0;
+    }
+
+    fn export_shell(&mut self) {
+        let mut forced: Vec<usize> = self.bookmarks.union(&self.visible_lines).copied().collect();
+        forced.sort_unstable();
+        let filters: Vec<ShellFilter> = self
+            .filters
+            .iter()
+            .filter(|f| f.enabled && !f.term.is_empty())
+            .map(|f| ShellFilter {
+                term: f.term.clone(),
+                case_sensitive: f.case_sensitive,
+                regex: f.regex,
+                negate: f.negate,
+            })
+            .collect();
+        let file = std::path::Path::new(&self.file_name)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&self.file_name)
+            .to_string();
+        let cmd = build_shell_command(&ShellCommandOptions {
+            filters,
+            filter_mode: self.filter_mode,
+            forced_lines: forced,
+            file_name: file,
+        });
+        self.overlay = Overlay::Text {
+            title: "Shell command (grep/awk) reproducing this view".to_string(),
+            body: cmd.lines().map(|l| l.to_string()).collect(),
+        };
+        self.overlay_scroll = 0;
+    }
+
+    fn render_menu(&mut self, f: &mut Frame) {
+        let area = f.area();
+        let block = Block::bordered().title(
+            " Menu · space toggle · r rx · i case · x neg · d del · C/c/B clear · o AND/OR · f/h add · e view · g grep · q close ",
+        );
+        let inner = block.inner(area);
+        let nf = self.filters.len();
+        let mut lines: Vec<Line<'static>> = Vec::new();
+
+        lines.push(Line::from(Span::styled(
+            format!(
+                "Filters ({})",
+                if self.filter_mode == FilterMode::And { "AND" } else { "OR" }
+            ),
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        if self.filters.is_empty() {
+            lines.push(Line::from(Span::styled("  (none)", Style::default().fg(Color::DarkGray))));
+        }
+        for (i, filt) in self.filters.iter().enumerate() {
+            lines.push(filter_row(filt, self.menu_sel == i));
+        }
+
+        lines.push(Line::from(String::new()));
+        lines.push(Line::from(Span::styled(
+            "Highlights",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        if self.highlights.is_empty() {
+            lines.push(Line::from(Span::styled("  (none)", Style::default().fg(Color::DarkGray))));
+        }
+        for (j, hl) in self.highlights.iter().enumerate() {
+            lines.push(highlight_row(hl, self.menu_sel == nf + j));
+        }
+
+        lines.push(Line::from(String::new()));
+        let bm: Vec<String> = self.bookmarks.iter().map(|b| b.to_string()).collect();
+        lines.push(Line::from(Span::styled(
+            format!(
+                "Bookmarks  {}",
+                if bm.is_empty() { "(none)".to_string() } else { bm.join(", ") }
+            ),
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        // Clamp overlong menus to the visible area.
+        let visible: Vec<Line> = lines.into_iter().take(inner.height as usize).collect();
+        f.render_widget(Paragraph::new(visible).block(block), area);
+    }
+
     // --- key handling ---------------------------------------------------------
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -450,6 +804,17 @@ impl App {
                 _ => self.confirm_quit = false,
             }
             return;
+        }
+        match self.overlay {
+            Overlay::None => {}
+            Overlay::Menu => {
+                self.handle_menu_key(key);
+                return;
+            }
+            _ => {
+                self.handle_scroll_overlay_key(key);
+                return;
+            }
         }
         if self.mode != Mode::Normal {
             self.handle_input_key(key, ctrl);
@@ -574,8 +939,17 @@ impl App {
             KeyCode::Char('[') => self.goto_bookmark(false),
             KeyCode::Char(']') => self.goto_bookmark(true),
             KeyCode::Char('o') => self.toggle_filter_mode(),
-            KeyCode::Enter | KeyCode::Char('+') | KeyCode::Char('=') => self.gap_action(true),
+            KeyCode::Enter => self.enter_action(),
+            KeyCode::Char('+') | KeyCode::Char('=') => self.gap_action(true),
             KeyCode::Char('-') | KeyCode::Char('_') => self.gap_action(false),
+            KeyCode::Char('?') => {
+                self.overlay = Overlay::Help;
+                self.overlay_scroll = 0;
+            }
+            KeyCode::Char('m') => {
+                self.overlay = Overlay::Menu;
+                self.menu_sel = 0;
+            }
             KeyCode::Esc => {
                 self.search_term.clear();
                 self.matches.clear();
@@ -588,6 +962,17 @@ impl App {
     // --- rendering ------------------------------------------------------------
 
     pub fn render(&mut self, f: &mut Frame) {
+        match self.overlay {
+            Overlay::None => {}
+            Overlay::Menu => {
+                self.render_menu(f);
+                return;
+            }
+            _ => {
+                self.render_overlay(f);
+                return;
+            }
+        }
         let chunks = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(1),
@@ -840,6 +1225,113 @@ fn group_spans(slice: &[(char, Style)]) -> Vec<Span<'static>> {
     spans
 }
 
+// Wrap per-character styled content into fixed-width rows, grouping runs of equal
+// style into spans.
+fn wrap_styled(styled: &[(char, Style)], w: usize) -> Vec<Line<'static>> {
+    if styled.is_empty() {
+        return vec![Line::from(String::new())];
+    }
+    let w = w.max(1);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < styled.len() {
+        let end = (i + w).min(styled.len());
+        out.push(Line::from(group_spans(&styled[i..end])));
+        i = end;
+    }
+    out
+}
+
+fn wrap_plain(s: &str, w: usize) -> Vec<Line<'static>> {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.is_empty() {
+        return vec![Line::from(String::new())];
+    }
+    let w = w.max(1);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let end = (i + w).min(chars.len());
+        out.push(Line::from(chars[i..end].iter().collect::<String>()));
+        i = end;
+    }
+    out
+}
+
+fn name_color(name: &str) -> Color {
+    match name {
+        "cyan" => Color::Cyan,
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "magenta" => Color::Magenta,
+        _ => Color::DarkGray,
+    }
+}
+
+fn help_lines() -> Vec<Line<'static>> {
+    const ROWS: &[&str] = &[
+        "Movement   j/k or ↑/↓ move · f/b (or space/PgDn, ^F/^B) page · g/G top/bottom",
+        "Long lines ←/→ pan · 0 reset pan · w toggle in-place wrap",
+        "Search     / search · n/N next/prev · ^R regex · ^A case · ↑/↓ history · Esc clear",
+        "Highlight  h add a coloured highlight term",
+        "Filter     F add filter · o toggle AND/OR",
+        "Bookmarks  B toggle on cursor line · [ / ] previous/next bookmark",
+        "Gaps       Enter/+ reveal from top · - reveal from bottom",
+        "Expand     Enter on a line: JSON view, or wrapped view if it doesn't fit",
+        "Other      ? this help · q quit (confirm) · ^C quit now",
+    ];
+    ROWS.iter()
+        .map(|r| Line::from(Span::raw(r.to_string())))
+        .collect()
+}
+
+fn filter_row(f: &FilterEntry, selected: bool) -> Line<'static> {
+    let cur = if selected { "▸ " } else { "  " };
+    let en = if f.enabled { "[on]" } else { "[· ]" };
+    let rx = if f.regex { ".*" } else { "ab" };
+    let ca = if f.case_sensitive { "Aa" } else { "aa" };
+    let ng = if f.negate { " ≠" } else { "" };
+    let bad = f.regex && bad_regex(&f.term);
+    let text = format!(
+        "{cur}{en} {rx} {ca}{ng}  {}{}",
+        f.term,
+        if bad { " (bad regex)" } else { "" }
+    );
+    let mut st = if f.enabled {
+        Style::default()
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    if bad {
+        st = st.fg(Color::Red);
+    }
+    if selected {
+        st = st.bg(CURSOR_BG);
+    }
+    Line::from(Span::styled(text, st))
+}
+
+fn highlight_row(h: &HighlightEntry, selected: bool) -> Line<'static> {
+    let cur = if selected { "▸ " } else { "  " };
+    let en = if h.enabled { "[on]" } else { "[· ]" };
+    let rx = if h.regex { ".*" } else { "ab" };
+    let ca = if h.case_sensitive { "Aa" } else { "aa" };
+    let (r, g, b) = hex_rgb(&h.color);
+    let mut st = if h.enabled {
+        Style::default()
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    if selected {
+        st = st.bg(CURSOR_BG);
+    }
+    Line::from(vec![
+        Span::styled(format!("{cur}{en} "), st),
+        Span::styled("██", Style::default().fg(Color::Rgb(r, g, b))),
+        Span::styled(format!(" {rx} {ca}  {}", h.term), st),
+    ])
+}
+
 fn bad_regex(pattern: &str) -> bool {
     regex::Regex::new(pattern).is_err()
 }
@@ -986,6 +1478,41 @@ mod tests {
         for l in 3..=7 {
             assert!(app.visible_lines.contains(&l), "line {l} should be revealed");
         }
+    }
+
+    #[test]
+    fn menu_exports_view_and_shell() {
+        let mut app = app_from(&["error one", "ok two", "error three"]);
+        app.add_filter("error");
+        app.export_view();
+        match &app.overlay {
+            Overlay::Text { body, .. } => assert!(body[0].contains("filters=error"), "got {body:?}"),
+            _ => panic!("expected a text overlay"),
+        }
+        app.export_shell();
+        match &app.overlay {
+            Overlay::Text { body, .. } => {
+                assert!(body.join("\n").contains("grep -iF 'error'"), "got {body:?}")
+            }
+            _ => panic!("expected a text overlay"),
+        }
+    }
+
+    #[test]
+    fn enter_opens_the_right_overlay() {
+        let long = "x".repeat(500);
+        let mut app = app_from(&["short", &long, "{\"a\":1}"]);
+        app.width = 80;
+        app.cursor = 0; // short line fits → no overlay
+        app.enter_action();
+        assert!(matches!(app.overlay, Overlay::None));
+        app.cursor = 1; // long line → wrapped view
+        app.enter_action();
+        assert!(matches!(app.overlay, Overlay::Line(2)));
+        app.overlay = Overlay::None;
+        app.cursor = 2; // JSON line → JSON view
+        app.enter_action();
+        assert!(matches!(app.overlay, Overlay::Json(3)));
     }
 
     #[test]
