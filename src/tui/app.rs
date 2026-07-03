@@ -76,8 +76,9 @@ pub struct App {
     search_error: Option<&'static str>,
     matches: Vec<usize>,
     match_idx: usize,
-    search_history: Vec<String>,
-    search_hist_idx: i64, // -1 = not browsing
+    // Shared recent-input history across search / filter / highlight (newest first).
+    history: Vec<String>,
+    hist_idx: i64, // -1 = not browsing
 
     highlights: Vec<HighlightEntry>,
     filters: Vec<FilterEntry>,
@@ -125,8 +126,8 @@ impl App {
             search_error: None,
             matches: Vec::new(),
             match_idx: 0,
-            search_history: Vec::new(),
-            search_hist_idx: -1,
+            history: Vec::new(),
+            hist_idx: -1,
             highlights: Vec::new(),
             filters: Vec::new(),
             filter_mode: FilterMode::And,
@@ -353,7 +354,7 @@ impl App {
         if term.is_empty() {
             return;
         }
-        push_history(&mut self.search_history, term);
+        push_history(&mut self.history, term);
         self.search_term = term.to_string();
         self.match_idx = 0;
         if self.search_regex && bad_regex(term) {
@@ -416,6 +417,7 @@ impl App {
         if term.is_empty() {
             return;
         }
+        push_history(&mut self.history, term);
         let color = HIGHLIGHT_PALETTE[self.highlights.len() % HIGHLIGHT_PALETTE.len()].to_string();
         self.highlights.push(HighlightEntry {
             term: term.to_string(),
@@ -489,6 +491,7 @@ impl App {
         if term.is_empty() {
             return;
         }
+        push_history(&mut self.history, term);
         self.filters.push(FilterEntry {
             term: term.to_string(),
             enabled: true,
@@ -1079,12 +1082,12 @@ impl App {
                     Mode::Normal | Mode::Hist => {}
                 }
                 self.input.clear();
-                self.search_hist_idx = -1;
+                self.hist_idx = -1;
             }
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
                 self.input.clear();
-                self.search_hist_idx = -1;
+                self.hist_idx = -1;
             }
             KeyCode::Backspace => {
                 if self.input.is_empty() {
@@ -1092,34 +1095,34 @@ impl App {
                 } else {
                     self.input.pop();
                 }
-                self.search_hist_idx = -1;
+                self.hist_idx = -1;
             }
-            KeyCode::Up if self.mode == Mode::Search => self.history_recall(1),
-            KeyCode::Down if self.mode == Mode::Search => self.history_recall(-1),
+            KeyCode::Up => self.history_recall(1),
+            KeyCode::Down => self.history_recall(-1),
             KeyCode::Char(c) => {
                 self.input.push(c);
-                self.search_hist_idx = -1;
+                self.hist_idx = -1;
             }
             _ => {}
         }
     }
 
     fn history_recall(&mut self, dir: i64) {
-        let len = self.search_history.len() as i64;
+        let len = self.history.len() as i64;
         if len == 0 {
             return;
         }
         if dir > 0 {
-            let ni = (self.search_hist_idx + 1).min(len - 1);
-            self.search_hist_idx = ni;
-            self.input = self.search_history[ni as usize].clone();
-        } else if self.search_hist_idx <= 0 {
-            self.search_hist_idx = -1;
+            let ni = (self.hist_idx + 1).min(len - 1);
+            self.hist_idx = ni;
+            self.input = self.history[ni as usize].clone();
+        } else if self.hist_idx <= 0 {
+            self.hist_idx = -1;
             self.input.clear();
         } else {
-            let ni = self.search_hist_idx - 1;
-            self.search_hist_idx = ni;
-            self.input = self.search_history[ni as usize].clone();
+            let ni = self.hist_idx - 1;
+            self.hist_idx = ni;
+            self.input = self.history[ni as usize].clone();
         }
     }
 
@@ -1154,15 +1157,17 @@ impl App {
             KeyCode::Char('/') => {
                 self.mode = Mode::Search;
                 self.input.clear();
-                self.search_hist_idx = -1;
+                self.hist_idx = -1;
             }
             KeyCode::Char('h') => {
                 self.mode = Mode::Highlight;
                 self.input.clear();
+                self.hist_idx = -1;
             }
             KeyCode::Char('F') => {
                 self.mode = Mode::Filter;
                 self.input.clear();
+                self.hist_idx = -1;
             }
             KeyCode::Char('n') => self.goto_match(self.match_idx as i64 + 1),
             KeyCode::Char('N') => self.goto_match(self.match_idx as i64 - 1),
@@ -1442,12 +1447,16 @@ impl App {
             Mode::Highlight => Line::from(vec![
                 Span::raw(format!("highlight: {}", self.input)),
                 Span::styled("▏", Style::default().add_modifier(Modifier::REVERSED)),
+                Span::styled("  ↑↓ recent", Style::default().fg(Color::DarkGray)),
             ]),
             Mode::Filter => Line::from(vec![
                 Span::raw(format!("filter: {}", self.input)),
                 Span::styled("▏", Style::default().add_modifier(Modifier::REVERSED)),
                 Span::styled(
-                    format!("  [{}]", if self.filter_mode == FilterMode::And { "AND" } else { "OR" }),
+                    format!(
+                        "  [{}] · ↑↓ recent",
+                        if self.filter_mode == FilterMode::And { "AND" } else { "OR" }
+                    ),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]),
@@ -1823,6 +1832,22 @@ mod tests {
         app.cursor = 2; // JSON line → JSON view
         app.enter_action();
         assert!(matches!(app.overlay, Overlay::Json(3)));
+    }
+
+    #[test]
+    fn history_is_shared_across_input_modes() {
+        let mut app = app_from(&["error a", "ok b"]);
+        app.run_search("srch");
+        app.add_filter("filt");
+        app.add_highlight("hilite");
+        // Any input mode recalls the shared list, newest first.
+        app.mode = Mode::Highlight;
+        app.history_recall(1);
+        assert_eq!(app.input, "hilite");
+        app.history_recall(1);
+        assert_eq!(app.input, "filt");
+        app.history_recall(1);
+        assert_eq!(app.input, "srch");
     }
 
     #[test]
