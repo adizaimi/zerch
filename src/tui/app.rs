@@ -618,19 +618,21 @@ impl App {
         for s in spans {
             let style = if s.search {
                 Style::default().fg(Color::Black).bg(Color::Yellow)
-            } else {
-                let mut st = match &s.color {
+            } else if s.hl {
+                // highlight match: coloured box, one colour per term
+                match &s.color {
                     Some(c) if c.starts_with('#') => {
                         let (r, g, b) = hex_rgb(c);
-                        Style::default().fg(Color::Rgb(r, g, b))
+                        Style::default().fg(Color::Black).bg(Color::Rgb(r, g, b))
                     }
+                    _ => Style::default().add_modifier(Modifier::BOLD),
+                }
+            } else {
+                // JSON syntax base colour
+                match &s.color {
                     Some(c) => Style::default().fg(name_color(c)),
                     None => Style::default(),
-                };
-                if s.hl {
-                    st = st.add_modifier(Modifier::BOLD);
                 }
-                st
             };
             for ch in s.text.chars() {
                 out.push((ch, style));
@@ -1281,8 +1283,9 @@ impl App {
             let style = if s.search {
                 Style::default().fg(Color::Black).bg(Color::Yellow)
             } else if let Some(c) = s.color {
+                // highlight: a coloured box (like search), one colour per term
                 let (r, g, b) = hex_rgb(&c);
-                Style::default().fg(Color::Rgb(r, g, b))
+                Style::default().fg(Color::Black).bg(Color::Rgb(r, g, b))
             } else {
                 Style::default()
             };
