@@ -8,9 +8,10 @@
 //! the optional persistent SQLite/FTS5 tier is layered on later (Phase 9).
 
 use crate::engine::ansi::strip_ansi;
-use crate::engine::parse::{parse_line, NaiveZone, ParseOptions};
+use crate::engine::parse::{parse_line, NaiveZone, ParseOptions, Parsed};
 use crate::levels::{Level, LEVEL_NONE};
 use memmap2::Mmap;
+use rayon::prelude::*;
 use std::borrow::Cow;
 use std::fs::File;
 use std::io;
@@ -78,25 +79,28 @@ impl LineIndex {
         let total = starts.len();
         starts.push(len as u64); // sentinel end
 
-        // Per-line timestamp + level.
+        // Per-line timestamp + level, parsed in parallel. Crucially we do NOT
+        // ANSI-strip the whole line here — that would scan the entire file through
+        // a regex. Non-JSON lines only need their prefix (where the ts/level live);
+        // only JSON lines (rare) are stripped/parsed in full.
         let popts = ParseOptions {
             default_year: opts.default_year,
             naive_zone: Some(opts.naive_zone),
         };
-        let mut ts = Vec::with_capacity(total);
-        let mut levels = Vec::with_capacity(total);
-        let mut max_line_len = 0usize;
-        for i in 0..total {
-            let raw = trim_eol(&bytes[starts[i] as usize..starts[i + 1] as usize]);
-            let text = clean_str(raw);
-            let parsed = parse_line(&text, popts);
-            ts.push(parsed.ts.unwrap_or(NO_TS));
-            levels.push(parsed.level);
-            max_line_len = max_line_len.max(text.chars().count());
-            if i % 65_536 == 0 {
-                on_progress(starts[i] as f64 / len.max(1) as f64 * 100.0);
-            }
-        }
+        let (ts, levels): (Vec<i64>, Vec<Level>) = (0..total)
+            .into_par_iter()
+            .map(|i| {
+                let raw = trim_eol(&bytes[starts[i] as usize..starts[i + 1] as usize]);
+                let p = parse_meta(raw, popts);
+                (p.ts.unwrap_or(NO_TS), p.level)
+            })
+            .unzip();
+        // Longest line in bytes (incl. terminator) — a cheap upper bound for the
+        // horizontal-scroll limit; avoids a second full pass over the content.
+        let max_line_len = (0..total)
+            .map(|i| (starts[i + 1] - starts[i]) as usize)
+            .max()
+            .unwrap_or(0);
         on_progress(100.0);
 
         Ok(LineIndex {
@@ -166,6 +170,22 @@ fn trim_eol(mut raw: &[u8]) -> &[u8] {
     raw
 }
 
+// Parse a line's ts/level without scanning its whole length: JSON lines need the
+// full (stripped) object; everything else only needs a short prefix.
+fn parse_meta(raw: &[u8], opts: ParseOptions) -> Parsed {
+    let leading = raw.iter().position(|&b| b != b' ' && b != b'\t');
+    let is_json = matches!(leading, Some(i) if raw[i] == b'{');
+    if is_json {
+        parse_line(&clean_str(raw), opts)
+    } else {
+        let mut end = raw.len().min(256);
+        while end < raw.len() && (raw[end] & 0xC0) == 0x80 {
+            end += 1; // extend to the next UTF-8 char boundary
+        }
+        parse_line(&clean_str(&raw[..end]), opts)
+    }
+}
+
 fn clean_str(raw: &[u8]) -> Cow<'_, str> {
     match std::str::from_utf8(raw) {
         Ok(s) => strip_ansi(s),
@@ -220,8 +240,8 @@ mod tests {
         assert!(idx.ts_of(1).is_none()); // plain line, no ts
         // ANSI stripped on read; final line has no newline.
         assert_eq!(idx.get_line(5), "=== FAIL: test");
-        // longest line is the JSON one (line 4).
-        assert_eq!(idx.max_line_length(), idx.get_line(4).chars().count());
+        // max_line_length is a byte-length upper bound (>= the longest line's chars).
+        assert!(idx.max_line_length() >= idx.get_line(4).chars().count());
     }
 
     #[test]
@@ -232,6 +252,19 @@ mod tests {
         // Clamped to bounds.
         let all = idx.get_range(0, 999);
         assert_eq!(all.len(), 4);
+    }
+
+    #[test]
+    #[ignore = "manual perf check against a local large file"]
+    fn bench_open_ws() {
+        let path = std::path::Path::new("/tmp/ws.log");
+        if !path.exists() {
+            eprintln!("skip: no /tmp/ws.log");
+            return;
+        }
+        let t = std::time::Instant::now();
+        let idx = LineIndex::open(path, IndexOptions::default(), |_| {}).unwrap();
+        eprintln!("indexed {} lines in {:?}", idx.total_lines(), t.elapsed());
     }
 
     #[test]
