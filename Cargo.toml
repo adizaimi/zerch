@@ -14,6 +14,22 @@ categories = ["command-line-utilities"]
 name = "zercher"
 path = "src/main.rs"
 
+# Debian packaging via `cargo deb`. Runtime Depends are derived automatically from
+# the linked libraries (dpkg-shlibdeps), so the .deb stays lean.
+[package.metadata.deb]
+maintainer = "Adi Zaimi <adizaimi@yahoo.com>"
+copyright = "2026, Adi Zaimi"
+license-file = ["LICENSE-MIT", "0"]
+section = "utils"
+priority = "optional"
+extended-description = "A less-but-smarter terminal log viewer: search, filters, highlights, bookmarks, and log-level/time awareness, over an in-memory index that scales to multi-GB files."
+assets = [
+    ["target/release/zercher", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/zercher/README", "644"],
+    ["LICENSE-MIT", "usr/share/doc/zercher/LICENSE-MIT", "644"],
+    ["LICENSE-APACHE", "usr/share/doc/zercher/LICENSE-APACHE", "644"],
+]
+
 # Dependencies are added phase-by-phase as features land (kept intentionally lean):
 #   ratatui, crossterm  (TUI)      regex   (linear search)   memmap2 (mmap)
 #   rayon (parallel scan)          memchr  (fast literal)    rusqlite (Tier-2 index)
