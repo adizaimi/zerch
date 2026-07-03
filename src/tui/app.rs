@@ -69,6 +69,7 @@ pub struct App {
 
     mode: Mode,
     input: String,
+    input_cursor: usize, // caret position within `input`, in chars
 
     search_term: String,
     search_regex: bool,
@@ -120,6 +121,7 @@ impl App {
             height: 24,
             mode: Mode::Normal,
             input: String::new(),
+            input_cursor: 0,
             search_term: String::new(),
             search_regex: false,
             search_case: false,
@@ -892,12 +894,12 @@ impl App {
             KeyCode::Char('f') => {
                 self.overlay = Overlay::None;
                 self.mode = Mode::Filter;
-                self.input.clear();
+                self.reset_input();
             }
             KeyCode::Char('h') => {
                 self.overlay = Overlay::None;
                 self.mode = Mode::Highlight;
-                self.input.clear();
+                self.reset_input();
             }
             KeyCode::Char('e') => self.export_view(),
             KeyCode::Char('g') => self.export_shell(),
@@ -1071,6 +1073,7 @@ impl App {
             }
             return;
         }
+        let len = self.input.chars().count();
         match key.code {
             KeyCode::Enter => {
                 let term = self.input.trim().to_string();
@@ -1086,30 +1089,58 @@ impl App {
                     }
                     Mode::Normal | Mode::Hist => {}
                 }
-                self.input.clear();
-                self.hist_idx = -1;
+                self.reset_input();
             }
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
-                self.input.clear();
-                self.hist_idx = -1;
+                self.reset_input();
             }
             KeyCode::Backspace => {
                 if self.input.is_empty() {
                     self.mode = Mode::Normal;
-                } else {
-                    self.input.pop();
+                } else if self.input_cursor > 0 {
+                    let b = self.input_byte(self.input_cursor - 1);
+                    self.input.remove(b);
+                    self.input_cursor -= 1;
                 }
                 self.hist_idx = -1;
             }
+            KeyCode::Delete => {
+                if self.input_cursor < len {
+                    let b = self.input_byte(self.input_cursor);
+                    self.input.remove(b);
+                }
+                self.hist_idx = -1;
+            }
+            KeyCode::Left => self.input_cursor = self.input_cursor.saturating_sub(1),
+            KeyCode::Right => self.input_cursor = (self.input_cursor + 1).min(len),
+            KeyCode::Home => self.input_cursor = 0,
+            KeyCode::End => self.input_cursor = len,
             KeyCode::Up => self.history_recall(1),
             KeyCode::Down => self.history_recall(-1),
             KeyCode::Char(c) => {
-                self.input.push(c);
+                let b = self.input_byte(self.input_cursor);
+                self.input.insert(b, c);
+                self.input_cursor += 1;
                 self.hist_idx = -1;
             }
             _ => {}
         }
+    }
+
+    // Byte offset of the `n`-th char in `input` (end if out of range).
+    fn input_byte(&self, n: usize) -> usize {
+        self.input
+            .char_indices()
+            .nth(n)
+            .map(|(b, _)| b)
+            .unwrap_or(self.input.len())
+    }
+
+    fn reset_input(&mut self) {
+        self.input.clear();
+        self.input_cursor = 0;
+        self.hist_idx = -1;
     }
 
     fn history_recall(&mut self, dir: i64) {
@@ -1129,6 +1160,7 @@ impl App {
             self.hist_idx = ni;
             self.input = self.history[ni as usize].clone();
         }
+        self.input_cursor = self.input.chars().count(); // caret to end of recalled term
     }
 
     fn handle_normal_key(&mut self, key: KeyEvent, ctrl: bool) {
@@ -1161,18 +1193,15 @@ impl App {
             }
             KeyCode::Char('/') => {
                 self.mode = Mode::Search;
-                self.input.clear();
-                self.hist_idx = -1;
+                self.reset_input();
             }
             KeyCode::Char('h') => {
                 self.mode = Mode::Highlight;
-                self.input.clear();
-                self.hist_idx = -1;
+                self.reset_input();
             }
             KeyCode::Char('F') => {
                 self.mode = Mode::Filter;
-                self.input.clear();
-                self.hist_idx = -1;
+                self.reset_input();
             }
             KeyCode::Char('n') => self.goto_match(self.match_idx as i64 + 1),
             KeyCode::Char('N') => self.goto_match(self.match_idx as i64 - 1),
@@ -1430,6 +1459,23 @@ impl App {
         Line::from(s)
     }
 
+    // Render the input line as `prefix` + text with a block caret at input_cursor.
+    fn input_spans(&self, prefix: &str) -> Vec<Span<'static>> {
+        let chars: Vec<char> = self.input.chars().collect();
+        let cur = self.input_cursor.min(chars.len());
+        let before: String = chars[..cur].iter().collect();
+        let (under, after): (String, String) = if cur < chars.len() {
+            (chars[cur].to_string(), chars[cur + 1..].iter().collect())
+        } else {
+            (" ".to_string(), String::new())
+        };
+        vec![
+            Span::raw(format!("{prefix}{before}")),
+            Span::styled(under, Style::default().add_modifier(Modifier::REVERSED)),
+            Span::raw(after),
+        ]
+    }
+
     fn prompt_line(&self) -> Line<'static> {
         if self.confirm_quit {
             return Line::from(Span::styled(
@@ -1437,6 +1483,7 @@ impl App {
                 Style::default().add_modifier(Modifier::BOLD),
             ));
         }
+        let dim = Style::default().fg(Color::DarkGray);
         match self.mode {
             Mode::Search => {
                 let flags = format!(
@@ -1444,28 +1491,26 @@ impl App {
                     if self.search_regex { ".*" } else { "ab" },
                     if self.search_case { "Aa" } else { "aa" }
                 );
-                Line::from(vec![
-                    Span::raw(format!("/{}", self.input)),
-                    Span::styled("▏", Style::default().add_modifier(Modifier::REVERSED)),
-                    Span::styled(flags, Style::default().fg(Color::DarkGray)),
-                ])
+                let mut spans = self.input_spans("/");
+                spans.push(Span::styled(flags, dim));
+                Line::from(spans)
             }
-            Mode::Highlight => Line::from(vec![
-                Span::raw(format!("highlight: {}", self.input)),
-                Span::styled("▏", Style::default().add_modifier(Modifier::REVERSED)),
-                Span::styled("  ↑↓ recent", Style::default().fg(Color::DarkGray)),
-            ]),
-            Mode::Filter => Line::from(vec![
-                Span::raw(format!("filter: {}", self.input)),
-                Span::styled("▏", Style::default().add_modifier(Modifier::REVERSED)),
-                Span::styled(
+            Mode::Highlight => {
+                let mut spans = self.input_spans("highlight: ");
+                spans.push(Span::styled("  ↑↓ recent", dim));
+                Line::from(spans)
+            }
+            Mode::Filter => {
+                let mut spans = self.input_spans("filter: ");
+                spans.push(Span::styled(
                     format!(
                         "  [{}] · ↑↓ recent",
                         if self.filter_mode == FilterMode::And { "AND" } else { "OR" }
                     ),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]),
+                    dim,
+                ));
+                Line::from(spans)
+            }
             Mode::Hist => Line::from(Span::styled(
                 "time brush: ←/→ move · a anchor · Enter apply · c clear · T/Esc close",
                 Style::default().fg(Color::DarkGray),
@@ -1861,6 +1906,33 @@ mod tests {
         app.cursor = 2; // JSON line → JSON view
         app.enter_action();
         assert!(matches!(app.overlay, Overlay::Json(3)));
+    }
+
+    #[test]
+    fn recalled_term_is_editable_in_place() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let k = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        let mut app = app_n(5);
+        app.run_search("error");
+        app.mode = Mode::Highlight;
+        app.history_recall(1);
+        assert_eq!(app.input, "error");
+        assert_eq!(app.input_cursor, 5); // caret at end after recall
+
+        // Home + insert at the front.
+        app.handle_input_key(k(KeyCode::Home), false);
+        app.handle_input_key(k(KeyCode::Char('X')), false);
+        assert_eq!(app.input, "Xerror");
+        assert_eq!(app.input_cursor, 1);
+
+        // Move right and delete a char in the middle (Backspace deletes before caret).
+        app.handle_input_key(k(KeyCode::Right), false); // caret=2 (before 'r')
+        app.handle_input_key(k(KeyCode::Backspace), false); // remove 'e' at index 1
+        assert_eq!(app.input, "Xrror");
+
+        // Delete key removes the char under the caret.
+        app.handle_input_key(k(KeyCode::Delete), false);
+        assert_eq!(app.input, "Xror");
     }
 
     #[test]
