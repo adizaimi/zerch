@@ -4,7 +4,7 @@
 //! TUI. `--view <string>` restores a saved view (byte-compatible with the web
 //! app's shareable URL).
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -76,14 +76,19 @@ fn main() -> ExitCode {
         .num_threads(zercher::plan_threads(file_len, cores))
         .build_global();
 
-    eprintln!("indexing {file}…");
+    // Transient status on the normal screen (no newline), erased once indexing is
+    // done so it doesn't linger after the TUI (which uses the alternate screen) exits.
+    eprint!("indexing {file}…");
+    let _ = std::io::stderr().flush();
     let index = match LineIndex::open(path, IndexOptions::default(), |_pct| {}) {
         Ok(idx) => idx,
         Err(e) => {
-            eprintln!("zercher: could not read {file}: {e}");
+            eprintln!("\r\x1b[2Kzercher: could not read {file}: {e}");
             return ExitCode::FAILURE;
         }
     };
+    eprint!("\r\x1b[2K"); // carriage return + clear line
+    let _ = std::io::stderr().flush();
 
     match tui::run(index, file, initial_view) {
         Ok(()) => ExitCode::SUCCESS,
