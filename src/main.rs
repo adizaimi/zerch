@@ -67,6 +67,15 @@ fn main() -> ExitCode {
 
     let initial_view = view_str.as_deref().map(parse_view);
 
+    // Size the rayon pool to the file before any parallel work: small files skip
+    // the pool overhead, huge files scale up to every core. Must run before the
+    // first parallel call (the index scan); build_global is a one-time setup.
+    let file_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(zercher::plan_threads(file_len, cores))
+        .build_global();
+
     eprintln!("indexing {file}…");
     let index = match LineIndex::open(path, IndexOptions::default(), |_pct| {}) {
         Ok(idx) => idx,
