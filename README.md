@@ -95,17 +95,38 @@ cargo install --path .        # installs `zercher` into ~/.cargo/bin
 | `cargo build --profile release-debug` | `target/release-debug/zercher` | debugging — release speed **+ symbols** for `gdb`/`lldb` |
 | `cargo build` | `target/debug/zercher` | quick compiles only — slow at runtime |
 
-## Packaging (Debian)
+## Packaging (Debian / Ubuntu)
 
-The binary links only the system C library, so a `.deb` is tiny and needs no extra
-runtime. With [`cargo-deb`](https://github.com/kornelski/cargo-deb):
+The binary links only the system C library, so the `.deb` is tiny and needs no extra
+runtime. There are two supported ways to build one (both Linux-only).
+
+### Quick: `cargo-deb`
+
+Uses the `[package.metadata.deb]` section in `Cargo.toml` (binary, man page, docs,
+licenses). `Depends:` is derived automatically from the linked libraries.
 
 ```
 cargo install cargo-deb
-cargo deb            # produces target/debian/zercher_*.deb
+cargo deb            # → target/debian/zercher_0.1.0_<arch>.deb
+sudo apt install ./target/debian/zercher_*.deb
 ```
 
-`cargo deb` derives the `Depends:` line automatically from the linked libraries.
+### Native source package: `debian/`
+
+A standard debhelper + `dh-cargo` source package lives in `debian/` (required at the
+repo root by `dpkg-buildpackage`):
+
+```
+sudo apt install devscripts debhelper dh-cargo
+dpkg-buildpackage -us -uc -b     # → ../zercher_0.1.0_<arch>.deb
+```
+
+Note: a Debian build runs offline, so the crate dependencies must be available —
+either the Rust crates packaged in your Debian release, or vendored first with
+`cargo vendor` (plus a `.cargo/config.toml` pointing at the vendor dir).
+
+Both paths install the binary to `/usr/bin/zercher` and the man page to
+`/usr/share/man/man1/zercher.1`.
 
 ## License
 

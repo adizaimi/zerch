@@ -1,0 +1,6 @@
+zercher (0.1.0) unstable; urgency=medium
+
+  * Initial release: terminal log viewer with search, filters, highlights,
+    bookmarks, time histogram, and a web-compatible --view string.
+
+ -- Adi Zaimi <adizaimi@yahoo.com>  Thu, 03 Jul 2026 12:00:00 +0000

@@ -1,0 +1,5 @@
+#!/usr/bin/make -f
+# Build with debhelper + dh-cargo (the Rust build system helper).
+
+%:
+	dh $@ --buildsystem cargo

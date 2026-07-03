@@ -1,0 +1,84 @@
+.TH ZERCHER 1 "2026-07-03" "zercher 0.1.0" "User Commands"
+.SH NAME
+zercher \- a less-but-smarter terminal log viewer
+.SH SYNOPSIS
+.B zercher
+.I logfile
+.RB [ \-\-view
+.IR string ]
+.SH DESCRIPTION
+.B zercher
+is a terminal log viewer with search, filters, highlights, bookmarks, and
+log\-level / timestamp awareness. It builds an in\-memory index (memory\-mapping
+the file and scanning it in parallel), so it opens multi\-gigabyte files nearly
+instantly and searches them in well under a second.
+.SH OPTIONS
+.TP
+.BI \-\-view " string"
+Restore a saved view: filters, highlights, bookmarks, revealed ranges, the
+search term, and the selected line. The format is byte\-compatible with the
+zercher web application's shareable URL, so a string copied from the web
+address bar can be passed here.
+.TP
+.BR \-h ", " \-\-help
+Print a short usage summary and exit.
+.SH KEYS
+Press
+.B ?
+inside the viewer for the full, interactive cheat\-sheet. A summary:
+.TP
+.B j k \(ua \(da f b g G
+Move by line, page, or to the top/bottom.
+.TP
+.B \(<- \(-> 0 w
+Pan long lines, reset pan, toggle in\-place wrap.
+.TP
+.B /
+Search;
+.B n N
+next/previous match;
+.B ^R
+regex,
+.B ^A
+case,
+.B \(ua \(da
+recall recent inputs.
+.TP
+.B F
+Add a filter (reduces the view to matching lines);
+.B o
+toggle AND/OR.
+.TP
+.B h
+Add a coloured highlight. Filter and highlight prompts also support
+.BR ^R / ^A .
+.TP
+.B B [ ]
+Toggle a bookmark; jump to the previous/next bookmark.
+.TP
+.B Enter
+On a line: open a JSON view, or a wrapped view if it does not fit. On a gap:
+reveal hidden lines.
+.TP
+.B T t
+Show/hide the time histogram and enter the time\-brush.
+.TP
+.B m
+Menu: edit/delete filters and highlights, export the view string or an
+equivalent grep/awk command.
+.TP
+.B q ^C
+Quit (press
+.B q
+twice, or
+.BR ^C ,
+to exit immediately).
+.SH ENVIRONMENT
+.TP
+.B ZERCHER_NAIVE_TZ
+Interpretation for offset\-less timestamps:
+.BR utc ", " local ", or a fixed offset like " +02:00 .
+.SH AUTHOR
+Adi Zaimi.
+.SH LICENSE
+Dual\-licensed under the MIT and Apache\-2.0 licenses, at your option.

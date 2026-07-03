@@ -1,5 +1,13 @@
 /target
 **/*.rs.bk
 
+# Debian build artifacts (dpkg-buildpackage / debhelper)
+/debian/.debhelper/
+/debian/zercher/
+/debian/files
+/debian/*.substvars
+/debian/*.debhelper
+/debian/debhelper-build-stamp
+
 # Never commit local restart helper (per project convention)
 restart.sh

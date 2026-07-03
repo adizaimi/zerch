@@ -25,6 +25,7 @@ priority = "optional"
 extended-description = "A less-but-smarter terminal log viewer: search, filters, highlights, bookmarks, and log-level/time awareness, over an in-memory index that scales to multi-GB files."
 assets = [
     ["target/release/zercher", "usr/bin/", "755"],
+    ["man/zercher.1", "usr/share/man/man1/zercher.1", "644"],
     ["README.md", "usr/share/doc/zercher/README", "644"],
     ["LICENSE-MIT", "usr/share/doc/zercher/LICENSE-MIT", "644"],
     ["LICENSE-APACHE", "usr/share/doc/zercher/LICENSE-APACHE", "644"],
