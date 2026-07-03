@@ -246,7 +246,7 @@ impl App {
         let nc = (self.cursor as i64 + delta).clamp(0, count as i64 - 1) as usize;
         self.cursor = nc;
         if self.wrap {
-            self.pos = self.clamp_pos(nc as i64);
+            self.scroll_wrapped_to_cursor();
             return;
         }
         let vp = self.height.max(1);
@@ -292,6 +292,39 @@ impl App {
         } else {
             self.clamp_pos(c as i64 - self.height as i64 / 2)
         };
+    }
+
+    // Screen rows a displayed item occupies in wrap mode.
+    fn wrap_rows_at(&self, p: usize) -> usize {
+        match self.item_at(p) {
+            DisplayedItem::Gap { .. } => 1,
+            DisplayedItem::Line(n) => {
+                let len = self.index.get_line(n).replace('\t', "  ").chars().count();
+                let w = self.content_width();
+                if len == 0 {
+                    1
+                } else {
+                    len.div_ceil(w)
+                }
+            }
+        }
+    }
+
+    // In wrap mode, scroll the top position minimally so the cursor's (possibly
+    // multi-row) line stays fully visible — height-aware, like the non-wrap path.
+    fn scroll_wrapped_to_cursor(&mut self) {
+        if self.cursor < self.pos {
+            self.pos = self.cursor;
+            return;
+        }
+        let vp = self.height.max(1);
+        let mut p = self.pos;
+        let mut total: usize = (self.pos..=self.cursor).map(|q| self.wrap_rows_at(q)).sum();
+        while total > vp && p < self.cursor {
+            total -= self.wrap_rows_at(p);
+            p += 1;
+        }
+        self.pos = p;
     }
 
     fn pan(&mut self, dir: i64) {
@@ -1610,6 +1643,22 @@ mod tests {
         assert_eq!(app.pos, 10);
         app.jump_to(1000);
         assert_eq!(app.cursor, 99);
+    }
+
+    #[test]
+    fn wrap_moves_cursor_before_scrolling() {
+        let mut app = app_from(&["a", "b", "c", "d", "e", "f"]);
+        app.wrap = true;
+        app.width = 80;
+        app.height = 3; // short lines → 1 wrapped row each, 3 visible
+        app.move_cursor(1);
+        assert_eq!((app.cursor, app.pos), (1, 0)); // highlight moves down, no scroll
+        app.move_cursor(1);
+        assert_eq!((app.cursor, app.pos), (2, 0));
+        app.move_cursor(1);
+        assert_eq!((app.cursor, app.pos), (3, 1)); // now scrolls by one
+        app.move_cursor(-3);
+        assert_eq!((app.cursor, app.pos), (0, 0)); // scrolls back up
     }
 
     #[test]
