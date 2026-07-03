@@ -79,6 +79,8 @@ pub struct App {
     search_regex: bool,
     search_case: bool,
     search_error: Option<&'static str>,
+    /// Transient status-bar message (e.g. "no timestamps"); cleared on next keypress.
+    hint: Option<&'static str>,
     matches: Vec<usize>,
     match_idx: usize,
     // Shared recent-input history across search / filter / highlight (newest first).
@@ -132,6 +134,7 @@ impl App {
             search_regex: false,
             search_case: false,
             search_error: None,
+            hint: None,
             matches: Vec::new(),
             match_idx: 0,
             history: Vec::new(),
@@ -713,7 +716,9 @@ impl App {
             self.recompute();
             self.pos = 0;
             self.cursor = 0;
-        } else if self.index.time_bounds().is_some() {
+        } else if self.index.time_bounds().is_none() {
+            self.hint = Some("no timestamps in this file — histogram unavailable");
+        } else {
             self.show_hist = true;
             self.hist_cursor = 0;
             self.hist_anchor = 0;
@@ -1029,6 +1034,8 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return;
         }
+        // Any keypress clears a transient hint from the previous action.
+        self.hint = None;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && matches!(key.code, KeyCode::Char('c')) {
             self.should_quit = true;
@@ -1471,6 +1478,9 @@ impl App {
         }
         if self.hscroll > 0 {
             s.push_str(&format!("col {}  ", self.hscroll));
+        }
+        if let Some(h) = self.hint {
+            s.push_str(&format!(" · {h}"));
         }
         Line::from(s)
     }
