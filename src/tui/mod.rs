@@ -7,6 +7,7 @@ pub mod app;
 use crate::engine::index::LineIndex;
 use crate::view::state::ViewState;
 use app::App;
+use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{self, Event};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -21,7 +22,7 @@ struct TermGuard;
 impl Drop for TermGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, Show);
     }
 }
 
@@ -57,7 +58,7 @@ fn suspend_to_background(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen)?;
+    execute!(io::stdout(), LeaveAlternateScreen, Show)?;
     // Deliver the default job-control stop; returns after SIGCONT (`fg`).
     unsafe {
         libc::raise(libc::SIGTSTP);
