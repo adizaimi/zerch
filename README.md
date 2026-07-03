@@ -44,12 +44,56 @@ the selected line — e.g. a string copied from the web app's address bar.
 
 ## Building
 
+Requires a Rust toolchain (1.85+). No external system libraries are needed — the
+binary links only the platform C runtime (`libc`).
+
 ```
 cargo build --release
 ```
 
-The optimized binary lands at `target/release/zercher`. Use the release build for
-large files — the debug build's regex is much slower.
+The optimized binary lands at `target/release/zercher`. **Always use the release
+build for large files** — the plain `cargo build` (dev profile) is unoptimized and
+its regex is far slower at runtime.
+
+### Linux
+
+1. Install a C linker (Rust shells out to `cc` to link):
+
+   ```
+   # Debian / Ubuntu
+   sudo apt install build-essential
+   # Fedora
+   sudo dnf install gcc
+   # Alpine
+   sudo apk add build-base
+   ```
+
+2. Install Rust (if not already), then build:
+
+   ```
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   source "$HOME/.cargo/env"
+   cargo build --release
+   ./target/release/zercher /path/to/logfile
+   ```
+
+That's it — there are no `-dev` package dependencies to install (SQLite is not used;
+the TUI, search, and regex are all pure Rust). The result is a self-contained binary
+depending only on `libc`/`libgcc`; verify with `ldd target/release/zercher`.
+
+### Install on your PATH
+
+```
+cargo install --path .        # installs `zercher` into ~/.cargo/bin
+```
+
+### Build profiles
+
+| Command | Output | Use for |
+|---|---|---|
+| `cargo build --release` | `target/release/zercher` | normal use — fast, small, stripped |
+| `cargo build --profile release-debug` | `target/release-debug/zercher` | debugging — release speed **+ symbols** for `gdb`/`lldb` |
+| `cargo build` | `target/debug/zercher` | quick compiles only — slow at runtime |
 
 ## Packaging (Debian)
 
