@@ -1032,7 +1032,10 @@ impl App {
         }
         if self.confirm_quit {
             match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => self.should_quit = true,
+                // q again (or y) confirms; any other key cancels.
+                KeyCode::Char('q') | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.should_quit = true
+                }
                 _ => self.confirm_quit = false,
             }
             return;
@@ -1430,7 +1433,7 @@ impl App {
     fn prompt_line(&self) -> Line<'static> {
         if self.confirm_quit {
             return Line::from(Span::styled(
-                "Quit? (y/n)",
+                "Quit? press q or y to confirm · any other key cancels",
                 Style::default().add_modifier(Modifier::BOLD),
             ));
         }
@@ -1644,6 +1647,29 @@ mod tests {
     fn app_n(n: usize) -> App {
         let lines: Vec<String> = (1..=n).map(|i| format!("line {i}")).collect();
         app_from(&lines.iter().map(String::as_str).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn double_q_and_ctrl_c_quit() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let q = || KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+
+        let mut app = app_n(5);
+        app.handle_key(q());
+        assert!(!app.should_quit); // first q → confirm prompt
+        app.handle_key(q());
+        assert!(app.should_quit); // second q → exit
+
+        // A stray key between the two cancels the confirm (no accidental quit).
+        let mut app = app_n(5);
+        app.handle_key(q());
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert!(!app.should_quit);
+
+        // Ctrl-C exits immediately from normal mode.
+        let mut app = app_n(5);
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.should_quit);
     }
 
     #[test]
