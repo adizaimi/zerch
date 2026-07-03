@@ -70,6 +70,10 @@ pub struct App {
     mode: Mode,
     input: String,
     input_cursor: usize, // caret position within `input`, in chars
+    // Pending regex/case flags for the term being typed (filter/highlight apply
+    // these on Enter; ^R / ^A toggle them, mirroring search).
+    input_regex: bool,
+    input_case: bool,
 
     search_term: String,
     search_regex: bool,
@@ -122,6 +126,8 @@ impl App {
             mode: Mode::Normal,
             input: String::new(),
             input_cursor: 0,
+            input_regex: false,
+            input_case: false,
             search_term: String::new(),
             search_regex: false,
             search_case: false,
@@ -425,8 +431,8 @@ impl App {
             term: term.to_string(),
             color,
             enabled: true,
-            case_sensitive: false,
-            regex: false,
+            case_sensitive: self.input_case,
+            regex: self.input_regex,
         });
     }
 
@@ -497,8 +503,8 @@ impl App {
         self.filters.push(FilterEntry {
             term: term.to_string(),
             enabled: true,
-            case_sensitive: false,
-            regex: false,
+            case_sensitive: self.input_case,
+            regex: self.input_regex,
             negate: false,
         });
         self.recompute();
@@ -1065,10 +1071,18 @@ impl App {
     }
 
     fn handle_input_key(&mut self, key: KeyEvent, ctrl: bool) {
-        if ctrl && self.mode == Mode::Search {
+        if ctrl {
             match key.code {
-                KeyCode::Char('r') => self.search_regex = !self.search_regex,
-                KeyCode::Char('a') => self.search_case = !self.search_case,
+                KeyCode::Char('r') => match self.mode {
+                    Mode::Search => self.search_regex = !self.search_regex,
+                    Mode::Highlight | Mode::Filter => self.input_regex = !self.input_regex,
+                    _ => {}
+                },
+                KeyCode::Char('a') => match self.mode {
+                    Mode::Search => self.search_case = !self.search_case,
+                    Mode::Highlight | Mode::Filter => self.input_case = !self.input_case,
+                    _ => {}
+                },
                 _ => {}
             }
             return;
@@ -1141,6 +1155,8 @@ impl App {
         self.input.clear();
         self.input_cursor = 0;
         self.hist_idx = -1;
+        self.input_regex = false;
+        self.input_case = false;
     }
 
     fn history_recall(&mut self, dir: i64) {
@@ -1459,6 +1475,21 @@ impl App {
         Line::from(s)
     }
 
+    fn rx_badge(&self) -> &'static str {
+        if self.input_regex {
+            ".*"
+        } else {
+            "ab"
+        }
+    }
+    fn ca_badge(&self) -> &'static str {
+        if self.input_case {
+            "Aa"
+        } else {
+            "aa"
+        }
+    }
+
     // Render the input line as `prefix` + text with a block caret at input_cursor.
     fn input_spans(&self, prefix: &str) -> Vec<Span<'static>> {
         let chars: Vec<char> = self.input.chars().collect();
@@ -1497,15 +1528,20 @@ impl App {
             }
             Mode::Highlight => {
                 let mut spans = self.input_spans("highlight: ");
-                spans.push(Span::styled("  ↑↓ recent", dim));
+                spans.push(Span::styled(
+                    format!("  [{} {}] ^R rx · ^A case · ↑↓ recent", self.rx_badge(), self.ca_badge()),
+                    dim,
+                ));
                 Line::from(spans)
             }
             Mode::Filter => {
                 let mut spans = self.input_spans("filter: ");
                 spans.push(Span::styled(
                     format!(
-                        "  [{}] · ↑↓ recent",
-                        if self.filter_mode == FilterMode::And { "AND" } else { "OR" }
+                        "  [{}] [{} {}] ^R rx · ^A case · ↑↓ recent",
+                        if self.filter_mode == FilterMode::And { "AND" } else { "OR" },
+                        self.rx_badge(),
+                        self.ca_badge()
                     ),
                     dim,
                 ));
@@ -1933,6 +1969,33 @@ mod tests {
         // Delete key removes the char under the caret.
         app.handle_input_key(k(KeyCode::Delete), false);
         assert_eq!(app.input, "Xror");
+    }
+
+    #[test]
+    fn inline_regex_toggle_in_highlight_and_filter() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let typ = |app: &mut App, s: &str| {
+            for c in s.chars() {
+                app.handle_input_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), false);
+            }
+        };
+        let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+
+        let mut app = app_n(5);
+        app.mode = Mode::Highlight;
+        app.reset_input();
+        app.handle_input_key(ctrl_r, true); // ^R → regex on
+        typ(&mut app, "[a-z]+");
+        app.handle_input_key(enter, false);
+        assert!(app.highlights[0].regex);
+
+        app.mode = Mode::Filter;
+        app.reset_input();
+        app.handle_input_key(ctrl_r, true);
+        typ(&mut app, "err");
+        app.handle_input_key(enter, false);
+        assert!(app.filters[0].regex);
     }
 
     #[test]
