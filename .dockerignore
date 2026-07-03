@@ -1,0 +1,10 @@
+# Keep the build context small: source, debian/, man/, Cargo.*, docs, licenses.
+target/
+.git/
+debian/.debhelper/
+debian/zercher/
+debian/files
+debian/*.substvars
+debian/*.debhelper
+debian/debhelper-build-stamp
+restart.sh

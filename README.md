@@ -44,7 +44,7 @@ the selected line — e.g. a string copied from the web app's address bar.
 
 ## Building
 
-Requires a Rust toolchain (1.85+). No external system libraries are needed — the
+Requires a Rust toolchain (1.80+). No external system libraries are needed — the
 binary links only the platform C runtime (`libc`).
 
 ```
@@ -128,6 +128,20 @@ pointing at the vendor dir. Also ensure the toolchain satisfies the crate's
 
 Both paths install the binary to `/usr/bin/zercher` and the man page to
 `/usr/share/man/man1/zercher.1`.
+
+### Build & test the `.deb` in Docker
+
+`packaging/deb.Dockerfile` builds the package in a clean Debian image and smoke-tests
+it (installs into `debian:bookworm-slim`, runs `zercher --help`, checks the man page is
+packaged) — handy from a non-Linux host:
+
+```
+docker build -f packaging/deb.Dockerfile --target test -t zercher-deb .
+# copy the built .deb out:
+docker build -f packaging/deb.Dockerfile --target export -o type=local,dest=./dist .
+```
+
+The derived runtime deps are just `libc6` and `libgcc-s1`.
 
 ## License
 

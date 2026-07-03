@@ -2,7 +2,7 @@
 name = "zercher"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.96"
+rust-version = "1.80"
 description = "A less-but-smarter terminal log viewer: search, filters, highlights, bookmarks, and log-level/time awareness."
 authors = ["Adi Zaimi <adizaimi@yahoo.com>"]
 license = "MIT OR Apache-2.0"
