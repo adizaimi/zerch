@@ -136,6 +136,44 @@ impl App {
         }
     }
 
+    /// Restore a saved view (filters/highlights/bookmarks/revealed ranges/search
+    /// and the selected line, revealing it if it's filtered out).
+    pub fn apply_view(&mut self, v: ViewState) {
+        self.filter_mode = v.filter_mode;
+        self.filters = v.filters;
+        self.highlights = v.highlights;
+        self.bookmarks = v.bookmarks.into_iter().collect();
+        self.visible_lines = v.visible.into_iter().collect();
+        self.search_regex = v.search_regex;
+        self.search_case = v.search_case;
+        if !v.search.is_empty() {
+            self.search_term = v.search.clone();
+            if self.search_regex && bad_regex(&self.search_term) {
+                self.search_error = Some("bad regex");
+            } else if let Ok(res) = search(
+                &self.index,
+                &[SearchTerm::new(&self.search_term, Op::And)
+                    .case(self.search_case)
+                    .rx(self.search_regex)],
+                &Scope::default(),
+            ) {
+                self.matches = res.matching_lines;
+            }
+        }
+        self.recompute();
+        if let Some(sel) = v.selected {
+            if let Some(p) = self.pos_of_line(sel) {
+                self.jump_to(p as i64);
+            } else if sel >= 1 && sel <= self.total {
+                self.visible_lines.insert(sel);
+                self.recompute();
+                if let Some(p) = self.pos_of_line(sel) {
+                    self.jump_to(p as i64);
+                }
+            }
+        }
+    }
+
     fn count(&self) -> usize {
         self.displayed.as_ref().map_or(self.total, |d| d.len())
     }
@@ -1635,6 +1673,23 @@ mod tests {
         for l in 3..=7 {
             assert!(app.visible_lines.contains(&l), "line {l} should be revealed");
         }
+    }
+
+    #[test]
+    fn apply_view_restores_filters_and_selected() {
+        use crate::view::state::parse_view;
+        let mut app = app_from(&["error a", "ok b", "error c", "ok d", "error e"]);
+        // selected line 3 is in the filtered view → land on it.
+        app.apply_view(parse_view("filters=error&selected=3"));
+        assert_eq!(app.filters.len(), 1);
+        assert!(app.displayed.is_some());
+        assert_eq!(app.current_line(), Some(3));
+
+        // selected line 2 is filtered out → revealed, then focused.
+        let mut app2 = app_from(&["error a", "ok b", "error c"]);
+        app2.apply_view(parse_view("filters=error&selected=2"));
+        assert!(app2.visible_lines.contains(&2));
+        assert_eq!(app2.current_line(), Some(2));
     }
 
     #[test]

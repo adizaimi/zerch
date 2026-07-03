@@ -5,6 +5,7 @@
 pub mod app;
 
 use crate::engine::index::LineIndex;
+use crate::view::state::ViewState;
 use app::App;
 use ratatui::crossterm::event::{self, Event};
 use ratatui::crossterm::execute;
@@ -24,7 +25,7 @@ impl Drop for TermGuard {
     }
 }
 
-pub fn run(index: LineIndex, file_name: String) -> io::Result<()> {
+pub fn run(index: LineIndex, file_name: String, initial_view: Option<ViewState>) -> io::Result<()> {
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let _guard = TermGuard;
@@ -32,6 +33,9 @@ pub fn run(index: LineIndex, file_name: String) -> io::Result<()> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::new(index, file_name);
+    if let Some(v) = initial_view {
+        app.apply_view(v);
+    }
 
     while !app.should_quit {
         terminal.draw(|f| app.render(f))?;
