@@ -8,7 +8,8 @@
 //! matching the search engine.
 
 use crate::view::jsonline::{tokenize_json, JsonTokenType};
-use regex::RegexBuilder;
+use regex::{Regex, RegexBuilder};
+use std::sync::LazyLock;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct HighlightSpec {
@@ -31,6 +32,78 @@ pub struct JsonSpan {
     pub color: Option<String>,
     pub search: bool,
     pub hl: bool, // part of a highlight match (rendered bold)
+}
+
+/// Lightweight syntax token for the optional per-line syntax colouring.
+/// Recognizes logfmt `key=value` pairs and whole-line JSON.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SyntaxTok {
+    Key,
+    Str,
+    Num,
+    Bool,
+    Null,
+}
+
+// logfmt pair: identifier `=` (quoted-string | non-whitespace run).
+static LOGFMT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"([A-Za-z_][A-Za-z0-9_.\-]*)=("(?:[^"\\]|\\.)*"|[^\s]+)"#).unwrap()
+});
+
+// Char-index of a byte offset inside `text`.
+fn char_at(text: &str, byte: usize) -> usize {
+    text[..byte].chars().count()
+}
+
+/// Char-index ranges `[start, end)` of syntax tokens in `text`. Whole-line JSON
+/// (trimmed line starts with `{`/`[` and parses) uses the JSON tokenizer;
+/// everything else uses a loose logfmt scan. Empty for plain-prose lines.
+pub fn syntax_ranges(text: &str) -> Vec<(usize, usize, SyntaxTok)> {
+    let mut out = Vec::new();
+    let trimmed = text.trim_start();
+    let prefix_bytes = text.len() - trimmed.len();
+    let json_ok = (trimmed.starts_with('{') || trimmed.starts_with('['))
+        && serde_json::from_str::<serde_json::Value>(trimmed).is_ok();
+
+    if json_ok {
+        let mut off = char_at(text, prefix_bytes);
+        for t in tokenize_json(trimmed) {
+            let len = t.text.chars().count();
+            let kind = match t.kind {
+                JsonTokenType::Key => Some(SyntaxTok::Key),
+                JsonTokenType::String => Some(SyntaxTok::Str),
+                JsonTokenType::Number => Some(SyntaxTok::Num),
+                JsonTokenType::Boolean => Some(SyntaxTok::Bool),
+                JsonTokenType::Null => Some(SyntaxTok::Null),
+                _ => None,
+            };
+            if let Some(k) = kind {
+                out.push((off, off + len, k));
+            }
+            off += len;
+        }
+        return out;
+    }
+
+    for c in LOGFMT_RE.captures_iter(text) {
+        let key = c.get(1).unwrap();
+        let val = c.get(2).unwrap();
+        out.push((char_at(text, key.start()), char_at(text, key.end()), SyntaxTok::Key));
+        let v = val.as_str();
+        let kind = if v.starts_with('"') {
+            SyntaxTok::Str
+        } else if v == "true" || v == "false" {
+            SyntaxTok::Bool
+        } else if v == "null" || v == "nil" {
+            SyntaxTok::Null
+        } else if v.parse::<f64>().is_ok() {
+            SyntaxTok::Num
+        } else {
+            SyntaxTok::Str
+        };
+        out.push((char_at(text, val.start()), char_at(text, val.end()), kind));
+    }
+    out
 }
 
 /// Non-overlapping match ranges `[start, end)` of `term` in `text`, in char units.
@@ -304,6 +377,25 @@ mod tests {
         let hit = spans.iter().find(|s| s.text == "alice").unwrap();
         assert_eq!(hit.color.as_deref(), Some("#abc"));
         assert!(hit.hl);
+    }
+
+    #[test]
+    fn syntax_logfmt_and_json() {
+        // logfmt: key + number
+        let r = syntax_ranges("ts=1 level=info abcd=3.0 msg=\"hi\"");
+        assert!(r.iter().any(|(_, _, k)| *k == SyntaxTok::Key));
+        assert!(r.iter().any(|(_, _, k)| *k == SyntaxTok::Num));
+        assert!(r.iter().any(|(_, _, k)| *k == SyntaxTok::Str));
+
+        // JSON: whole-line objects use the JSON tokenizer.
+        let r = syntax_ranges(r#"{"blah":"special","n":42,"ok":true,"g":null}"#);
+        assert!(r.iter().any(|(_, _, k)| *k == SyntaxTok::Key));
+        assert!(r.iter().any(|(_, _, k)| *k == SyntaxTok::Num));
+        assert!(r.iter().any(|(_, _, k)| *k == SyntaxTok::Bool));
+        assert!(r.iter().any(|(_, _, k)| *k == SyntaxTok::Null));
+
+        // Plain prose: no ranges (avoids noise).
+        assert!(syntax_ranges("just a plain log message here").is_empty());
     }
 
     #[test]

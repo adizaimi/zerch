@@ -6,7 +6,9 @@ use crate::engine::index::{Histogram, LineIndex};
 use crate::engine::search::{search, Op, Scope, SearchTerm};
 use crate::levels::{hex_rgb, level_rgb};
 use crate::view::displayed::{build_displayed_items, DisplayedItem};
-use crate::view::highlight::{build_spans, color_json_line, match_ranges, HighlightSpec};
+use crate::view::highlight::{
+    build_spans, color_json_line, match_ranges, syntax_ranges, HighlightSpec, SyntaxTok,
+};
 use crate::view::jsonline::{format_json, parse_json_line};
 use crate::view::shell::{build_shell_command, ShellCommandOptions, ShellFilter};
 use crate::view::state::{serialize_view, FilterEntry, FilterMode, HighlightEntry, ViewState};
@@ -88,6 +90,8 @@ pub struct App {
     hist_idx: i64, // -1 = not browsing
 
     highlights: Vec<HighlightEntry>,
+    /// Menu-toggled per-line syntax colouring (logfmt / whole-line JSON).
+    syntax_color: bool,
     filters: Vec<FilterEntry>,
     filter_mode: FilterMode,
     bookmarks: BTreeSet<usize>,
@@ -140,6 +144,7 @@ impl App {
             history: Vec::new(),
             hist_idx: -1,
             highlights: Vec::new(),
+            syntax_color: false,
             filters: Vec::new(),
             filter_mode: FilterMode::And,
             bookmarks: BTreeSet::new(),
@@ -914,6 +919,7 @@ impl App {
             }
             KeyCode::Char('e') => self.export_view(),
             KeyCode::Char('g') => self.export_shell(),
+            KeyCode::Char('s') => self.syntax_color = !self.syntax_color,
             _ => {}
         }
     }
@@ -981,7 +987,7 @@ impl App {
     fn render_menu(&mut self, f: &mut Frame) {
         let area = f.area();
         let block = Block::bordered().title(
-            " Menu · space toggle · r rx · i case · x neg · d del · C/c/B clear · o AND/OR · f/h add · e view · g grep · q close ",
+            " Menu · space toggle · r rx · i case · x neg · d del · C/c/B clear · o AND/OR · f/h add · s syntax · e view · g grep · q close ",
         );
         let inner = block.inner(area);
         let nf = self.filters.len();
@@ -1019,6 +1025,13 @@ impl App {
             format!(
                 "Bookmarks  {}",
                 if bm.is_empty() { "(none)".to_string() } else { bm.join(", ") }
+            ),
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "Syntax color: {}  (s toggles)",
+                if self.syntax_color { "on" } else { "off" }
             ),
             Style::default().fg(Color::DarkGray),
         )));
@@ -1322,7 +1335,9 @@ impl App {
             .collect()
     }
 
-    // Per-character styled content for one line (highlights + search overlay).
+    // Per-character styled content for one line: syntax base (opt-in) with
+    // highlight boxes and the search overlay layered on top. Precedence:
+    // search > highlight > syntax > plain.
     fn style_line(&self, n: usize) -> Vec<(char, Style)> {
         let raw = self.index.get_line(n).replace('\t', "  ");
         let specs = self.enabled_highlight_specs();
@@ -1333,9 +1348,27 @@ impl App {
             self.search_case,
             self.search_regex,
         );
+
+        // Per-char syntax base colour (only computed when the toggle is on).
+        let syn: Vec<Option<Style>> = if self.syntax_color {
+            let total = raw.chars().count();
+            let mut v: Vec<Option<Style>> = vec![None; total];
+            for (s, e, tok) in syntax_ranges(&raw) {
+                let style = Style::default().fg(syntax_tok_color(tok));
+                for slot in v[s.min(total)..e.min(total)].iter_mut() {
+                    *slot = Some(style);
+                }
+            }
+            v
+        } else {
+            Vec::new()
+        };
+
         let mut out: Vec<(char, Style)> = Vec::with_capacity(raw.len());
+        let mut ci: usize = 0;
         for s in spans {
-            let style = if s.search {
+            let plain = !s.search && s.color.is_none();
+            let base = if s.search {
                 Style::default().fg(Color::Black).bg(Color::Yellow)
             } else if let Some(c) = s.color {
                 // highlight: a coloured box (like search), one colour per term
@@ -1344,9 +1377,15 @@ impl App {
             } else {
                 Style::default()
             };
-            for ch in s.text.chars() {
+            for (i, ch) in s.text.chars().enumerate() {
+                let style = if plain && !syn.is_empty() {
+                    syn.get(ci + i).copied().flatten().unwrap_or(base)
+                } else {
+                    base
+                };
                 out.push((ch, style));
             }
+            ci += s.text.chars().count();
         }
         out
     }
@@ -1619,6 +1658,16 @@ fn wrap_plain(s: &str, w: usize) -> Vec<Line<'static>> {
         i = end;
     }
     out
+}
+
+fn syntax_tok_color(t: SyntaxTok) -> Color {
+    match t {
+        SyntaxTok::Key => Color::Rgb(0x4f, 0xc3, 0xf7),  // cyan-blue
+        SyntaxTok::Str => Color::Rgb(0x81, 0xc7, 0x84),  // green
+        SyntaxTok::Num => Color::Rgb(0xff, 0xb7, 0x4d),  // amber
+        SyntaxTok::Bool => Color::Rgb(0xba, 0x68, 0xc8), // purple
+        SyntaxTok::Null => Color::Rgb(0x9e, 0x9e, 0x9e), // gray
+    }
 }
 
 fn name_color(name: &str) -> Color {
