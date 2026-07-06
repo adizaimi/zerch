@@ -714,13 +714,13 @@ impl App {
 
     fn toggle_hist(&mut self) {
         if self.show_hist {
+            // Preserve the current cursor line: only the displayed sequence needs
+            // to be recomputed (in case a time range was active), not the view.
             self.show_hist = false;
             self.hist = None;
             self.time_range = None;
             self.mode = Mode::Normal;
-            self.recompute();
-            self.pos = 0;
-            self.cursor = 0;
+            self.refresh_preserving();
         } else if self.index.time_bounds().is_none() {
             self.hint = Some("no timestamps in this file — histogram unavailable");
         } else {
