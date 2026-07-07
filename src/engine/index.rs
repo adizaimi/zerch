@@ -19,6 +19,151 @@ use std::path::Path;
 
 const NO_TS: i64 = i64::MIN;
 
+// ---- Packed metadata columns ---------------------------------------------
+//
+// Per-line metadata dominates RAM at high line counts, so we pack it. The
+// public API (get_line/ts_of/level_of) is unchanged — these types only exist
+// inside LineIndex and each expose a single `get(n)` at line-number granularity.
+
+/// Line-start byte offsets. Files whose length fits in `u32` (`< 4 GiB`) use a
+/// half-size Vec; larger files fall back to `u64`.
+enum LineStarts {
+    Small(Vec<u32>),
+    Large(Vec<u64>),
+}
+
+impl LineStarts {
+    fn from_u64s(file_len: u64, xs: Vec<u64>) -> Self {
+        if file_len <= u32::MAX as u64 {
+            Self::Small(xs.into_iter().map(|v| v as u32).collect())
+        } else {
+            Self::Large(xs)
+        }
+    }
+    fn push_end(&mut self, len: u64) {
+        match self {
+            Self::Small(v) => v.push(len as u32),
+            Self::Large(v) => v.push(len),
+        }
+    }
+    /// Release growth-strategy over-allocation. Called once after indexing since
+    /// the Vecs are built to their final size and never grow again.
+    fn shrink(&mut self) {
+        match self {
+            Self::Small(v) => v.shrink_to_fit(),
+            Self::Large(v) => v.shrink_to_fit(),
+        }
+    }
+    fn get(&self, i: usize) -> u64 {
+        match self {
+            Self::Small(v) => v[i] as u64,
+            Self::Large(v) => v[i],
+        }
+    }
+    fn len(&self) -> usize {
+        match self {
+            Self::Small(v) => v.len(),
+            Self::Large(v) => v.len(),
+        }
+    }
+}
+
+/// Level codes (0..=6) packed as nibbles — two per byte, halving this column.
+struct PackedLevels {
+    data: Vec<u8>,
+    n: usize,
+}
+
+impl PackedLevels {
+    fn from_iter(src: &[Level]) -> Self {
+        let n = src.len();
+        let mut data = vec![0u8; n.div_ceil(2)];
+        for (i, &v) in src.iter().enumerate() {
+            let byte = &mut data[i / 2];
+            let v = v & 0x0f;
+            if i % 2 == 0 {
+                *byte = (*byte & 0xf0) | v;
+            } else {
+                *byte = (*byte & 0x0f) | (v << 4);
+            }
+        }
+        Self { data, n }
+    }
+    fn get(&self, i: usize) -> Level {
+        if i >= self.n {
+            return LEVEL_NONE;
+        }
+        let byte = self.data[i / 2];
+        if i % 2 == 0 { byte & 0x0f } else { byte >> 4 }
+    }
+}
+
+/// Per-line timestamps. When the span (max - min) fits in `i32` ms (~24 days)
+/// we store `i32` deltas from a base; otherwise we keep full `i64` values.
+/// Present-vs-absent is packed as a 1-bit-per-line bitset (`i64::MIN` sentinel
+/// would work too, but a dedicated bitset keeps the "delta" code branch-free).
+enum TsColumn {
+    Delta { base: i64, deltas: Vec<i32> },
+    Full(Vec<i64>),
+}
+
+impl TsColumn {
+    /// Build from a Vec that uses `NO_TS` for absent lines.
+    fn build(xs: Vec<i64>) -> (Self, Vec<u64>) {
+        let n = xs.len();
+        // Presence bitset (1 bit per line).
+        let mut present = vec![0u64; n.div_ceil(64)];
+        let mut min = i64::MAX;
+        let mut max = i64::MIN;
+        for (i, &v) in xs.iter().enumerate() {
+            if v != NO_TS {
+                present[i / 64] |= 1u64 << (i % 64);
+                if v < min {
+                    min = v;
+                }
+                if v > max {
+                    max = v;
+                }
+            }
+        }
+        // Choose the compact representation when the whole span fits in i32 ms.
+        // (Absent entries store 0 in the delta slot; presence bitset gates reads.)
+        if min != i64::MAX && max.saturating_sub(min) <= i32::MAX as i64 {
+            let base = min;
+            let deltas: Vec<i32> = xs
+                .iter()
+                .map(|&v| if v == NO_TS { 0 } else { (v - base) as i32 })
+                .collect();
+            (Self::Delta { base, deltas }, present)
+        } else {
+            (Self::Full(xs), present)
+        }
+    }
+    fn get(&self, i: usize) -> i64 {
+        match self {
+            Self::Delta { base, deltas } => *base + deltas[i] as i64,
+            Self::Full(xs) => xs[i],
+        }
+    }
+    fn len(&self) -> usize {
+        match self {
+            Self::Delta { deltas, .. } => deltas.len(),
+            Self::Full(xs) => xs.len(),
+        }
+    }
+    fn shrink(&mut self) {
+        match self {
+            Self::Delta { deltas, .. } => deltas.shrink_to_fit(),
+            Self::Full(xs) => xs.shrink_to_fit(),
+        }
+    }
+}
+
+#[inline]
+fn is_present(present: &[u64], i: usize) -> bool {
+    (present[i / 64] >> (i % 64)) & 1 == 1
+}
+
 #[derive(Clone, Copy)]
 pub struct IndexOptions {
     /// Interpretation for offset-less timestamps. Defaults to `Utc` (deterministic);
@@ -41,9 +186,11 @@ pub struct LineIndex {
     mmap: Option<Mmap>,
     /// `starts.len() == total_lines + 1`; `starts[i]` is the byte offset of line
     /// `i+1`, and `starts[total_lines]` is the file length (sentinel end).
-    starts: Vec<u64>,
-    ts: Vec<i64>, // NO_TS = none
-    levels: Vec<Level>,
+    starts: LineStarts,
+    ts: TsColumn,
+    /// 1 bit per line: whether `ts.get(i)` holds a real timestamp.
+    ts_present: Vec<u64>,
+    levels: PackedLevels,
     max_line_len: usize,
 }
 
@@ -68,9 +215,8 @@ impl LineIndex {
 
         // Line-start offsets. memchr is memory-bandwidth bound, so we chunk the
         // mapping across rayon workers to saturate DRAM instead of a single core.
-        let mut starts = find_line_starts_parallel(bytes);
-        let total = starts.len();
-        starts.push(len as u64); // sentinel end
+        let raw_starts = find_line_starts_parallel(bytes);
+        let total = raw_starts.len();
 
         // Per-line timestamp + level, parsed in parallel. Crucially we do NOT
         // ANSI-strip the whole line here — that would scan the entire file through
@@ -80,10 +226,17 @@ impl LineIndex {
             default_year: opts.default_year,
             naive_zone: Some(opts.naive_zone),
         };
-        let (ts, levels): (Vec<i64>, Vec<Level>) = (0..total)
+        let end_of = |i: usize| -> u64 {
+            if i + 1 < total {
+                raw_starts[i + 1]
+            } else {
+                len as u64
+            }
+        };
+        let (ts_raw, levels_raw): (Vec<i64>, Vec<Level>) = (0..total)
             .into_par_iter()
             .map(|i| {
-                let raw = trim_eol(&bytes[starts[i] as usize..starts[i + 1] as usize]);
+                let raw = trim_eol(&bytes[raw_starts[i] as usize..end_of(i) as usize]);
                 let p = parse_meta(raw, popts);
                 (p.ts.unwrap_or(NO_TS), p.level)
             })
@@ -91,22 +244,35 @@ impl LineIndex {
         // Longest line in bytes (incl. terminator) — a cheap upper bound for the
         // horizontal-scroll limit; avoids a second full pass over the content.
         let max_line_len = (0..total)
-            .map(|i| (starts[i + 1] - starts[i]) as usize)
+            .map(|i| (end_of(i) - raw_starts[i]) as usize)
             .max()
             .unwrap_or(0);
+
+        // Pack the columns and release growth-strategy over-allocation (these
+        // Vecs are built to final size and never grow again).
+        let mut starts = LineStarts::from_u64s(len as u64, raw_starts);
+        starts.push_end(len as u64); // sentinel end
+        starts.shrink();
+        let (mut ts, mut ts_present) = TsColumn::build(ts_raw);
+        ts.shrink();
+        ts_present.shrink_to_fit();
+        let mut levels = PackedLevels::from_iter(&levels_raw);
+        levels.data.shrink_to_fit();
+
         on_progress(100.0);
 
         Ok(LineIndex {
             mmap,
             starts,
             ts,
+            ts_present,
             levels,
             max_line_len,
         })
     }
 
     pub fn total_lines(&self) -> usize {
-        self.starts.len() - 1
+        self.starts.len().saturating_sub(1)
     }
 
     pub fn max_line_length(&self) -> usize {
@@ -123,7 +289,7 @@ impl LineIndex {
             return &[];
         }
         let b = self.bytes();
-        trim_eol(&b[self.starts[n - 1] as usize..self.starts[n] as usize])
+        trim_eol(&b[self.starts.get(n - 1) as usize..self.starts.get(n) as usize])
     }
 
     /// Content of a 1-based line, ANSI-stripped. Borrows the mapping when the line
@@ -141,27 +307,38 @@ impl LineIndex {
 
     /// Timestamp (epoch ms) of a 1-based line, if it carried one.
     pub fn ts_of(&self, n: usize) -> Option<i64> {
-        match self.ts.get(n.wrapping_sub(1)) {
-            Some(&v) if v != NO_TS => Some(v),
-            _ => None,
+        if n == 0 || n > self.ts.len() {
+            return None;
         }
+        let i = n - 1;
+        is_present(&self.ts_present, i).then(|| self.ts.get(i))
     }
 
     /// Level code of a 1-based line (0 = none).
     pub fn level_of(&self, n: usize) -> Level {
-        self.levels.get(n.wrapping_sub(1)).copied().unwrap_or(LEVEL_NONE)
+        if n == 0 || n > self.total_lines() {
+            LEVEL_NONE
+        } else {
+            self.levels.get(n - 1)
+        }
     }
 
     /// `(min_ts, max_ts, count)` over timestamped lines, or `None` if none carry a
     /// timestamp.
     pub fn time_bounds(&self) -> Option<(i64, i64, usize)> {
+        let n = self.ts.len();
         let mut min = i64::MAX;
         let mut max = i64::MIN;
         let mut count = 0usize;
-        for &t in &self.ts {
-            if t != NO_TS {
-                min = min.min(t);
-                max = max.max(t);
+        for i in 0..n {
+            if is_present(&self.ts_present, i) {
+                let v = self.ts.get(i);
+                if v < min {
+                    min = v;
+                }
+                if v > max {
+                    max = v;
+                }
                 count += 1;
             }
         }
@@ -177,13 +354,14 @@ impl LineIndex {
         let bucket_ms = ((span + buckets as i64 - 1) / buckets as i64).max(1);
         let mut counts = vec![0u64; buckets];
         let mut max_level = vec![LEVEL_NONE; buckets];
-        for (i, &t) in self.ts.iter().enumerate() {
-            if t == NO_TS {
+        for i in 0..self.ts.len() {
+            if !is_present(&self.ts_present, i) {
                 continue;
             }
+            let t = self.ts.get(i);
             let b = (((t - min_ts) / bucket_ms) as usize).min(buckets - 1);
             counts[b] += 1;
-            let lvl = self.levels[i];
+            let lvl = self.levels.get(i);
             if lvl > max_level[b] {
                 max_level[b] = lvl;
             }
@@ -425,6 +603,75 @@ mod tests {
             t_seq,
             t_par,
             rayon::current_num_threads()
+        );
+    }
+
+    #[test]
+    fn packed_columns_round_trip() {
+        // levels: nibble pack should survive 0..=6 across even/odd indexes.
+        let src: Vec<Level> = (0..17).map(|i| (i as u8) % 7).collect();
+        let p = PackedLevels::from_iter(&src);
+        for (i, &v) in src.iter().enumerate() {
+            assert_eq!(p.get(i), v, "level mismatch at {i}");
+        }
+        // LineStarts: small path uses u32 halving.
+        let xs = vec![0u64, 100, 5000, 40000];
+        let ls = LineStarts::from_u64s(u32::MAX as u64, xs.clone());
+        assert!(matches!(ls, LineStarts::Small(_)));
+        for (i, &v) in xs.iter().enumerate() {
+            assert_eq!(ls.get(i), v);
+        }
+        // TsColumn: contiguous timestamps fit in i32-delta.
+        let base = 1_700_000_000_000i64;
+        let ts = vec![NO_TS, base, NO_TS, base + 1_000, base + 5_000];
+        let (col, pres) = TsColumn::build(ts.clone());
+        assert!(matches!(col, TsColumn::Delta { .. }));
+        for (i, &v) in ts.iter().enumerate() {
+            if v == NO_TS {
+                assert!(!is_present(&pres, i));
+            } else {
+                assert!(is_present(&pres, i));
+                assert_eq!(col.get(i), v);
+            }
+        }
+        // Huge span → falls back to Full.
+        let ts = vec![base, base + (i32::MAX as i64) + 1];
+        let (col, _) = TsColumn::build(ts.clone());
+        assert!(matches!(col, TsColumn::Full(_)));
+        for (i, &v) in ts.iter().enumerate() {
+            assert_eq!(col.get(i), v);
+        }
+    }
+
+    #[test]
+    #[ignore = "manual perf check against a local large file"]
+    fn bench_metadata_footprint_ws() {
+        let path = std::path::Path::new("/tmp/ws.log");
+        if !path.exists() {
+            eprintln!("skip: no /tmp/ws.log");
+            return;
+        }
+        let idx = LineIndex::open(path, IndexOptions::default(), |_| {}).unwrap();
+        let n = idx.total_lines();
+        let starts_b = match &idx.starts {
+            LineStarts::Small(v) => v.capacity() * 4,
+            LineStarts::Large(v) => v.capacity() * 8,
+        };
+        let ts_b = match &idx.ts {
+            TsColumn::Delta { deltas, .. } => deltas.capacity() * 4,
+            TsColumn::Full(v) => v.capacity() * 8,
+        };
+        let present_b = idx.ts_present.capacity() * 8;
+        let levels_b = idx.levels.data.capacity();
+        let total = starts_b + ts_b + present_b + levels_b;
+        eprintln!(
+            "{n} lines · starts {} MiB · ts {} MiB · present {} KiB · levels {} KiB · total {} MiB ({:.1} B/line)",
+            starts_b / (1024 * 1024),
+            ts_b / (1024 * 1024),
+            present_b / 1024,
+            levels_b / 1024,
+            total / (1024 * 1024),
+            total as f64 / n as f64
         );
     }
 
