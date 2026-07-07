@@ -1,3 +1,13 @@
+zercher (0.2.0) unstable; urgency=medium
+
+  * Faster indexing (parallel newline scan, ~15x on large files), ~50% less
+    per-line metadata memory, editable input line with shared history and
+    inline regex/case toggles for search/filter/highlight, syntax coloring
+    for logfmt and JSON, Ctrl-Z suspend, height-aware wrap scrolling, and
+    various bug fixes. Native Debian source package now included.
+
+ -- Adi Zaimi <adizaimi@yahoo.com>  Mon, 07 Jul 2026 12:00:00 +0000
+
 zercher (0.1.0) unstable; urgency=medium
 
   * Initial release: terminal log viewer with search, filters, highlights,
