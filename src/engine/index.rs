@@ -66,16 +66,9 @@ impl LineIndex {
         };
         let bytes: &[u8] = mmap.as_ref().map(|m| &m[..]).unwrap_or(&[]);
 
-        // Line-start offsets (fast: memchr over the whole mapping).
-        let mut starts: Vec<u64> = Vec::new();
-        if len > 0 {
-            starts.push(0);
-        }
-        for idx in memchr::memchr_iter(b'\n', bytes) {
-            if idx + 1 < len {
-                starts.push((idx + 1) as u64);
-            }
-        }
+        // Line-start offsets. memchr is memory-bandwidth bound, so we chunk the
+        // mapping across rayon workers to saturate DRAM instead of a single core.
+        let mut starts = find_line_starts_parallel(bytes);
         let total = starts.len();
         starts.push(len as u64); // sentinel end
 
@@ -215,6 +208,57 @@ pub struct Histogram {
     pub max_level: Vec<Level>,
 }
 
+// Discover all line-start offsets (line 1 = 0; subsequent lines start right after
+// each newline; a trailing newline does NOT produce a phantom empty last line).
+// Chunks the buffer across rayon workers so memchr saturates memory bandwidth.
+fn find_line_starts_parallel(bytes: &[u8]) -> Vec<u64> {
+    let n = bytes.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    // Tiny files: parallel split is pure overhead; do it inline.
+    const MIN_CHUNK_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
+    let threads = rayon::current_num_threads().max(1);
+    let chunk_count = (n / MIN_CHUNK_BYTES).max(1).min(threads);
+
+    let mut out: Vec<u64> = Vec::with_capacity(1);
+    out.push(0);
+
+    if chunk_count == 1 {
+        for i in memchr::memchr_iter(b'\n', bytes) {
+            if i + 1 < n {
+                out.push((i + 1) as u64);
+            }
+        }
+        return out;
+    }
+
+    let chunk_size = n.div_ceil(chunk_count);
+    // Each worker returns absolute "next line start" offsets in its chunk.
+    let per_chunk: Vec<Vec<u64>> = (0..chunk_count)
+        .into_par_iter()
+        .map(|c| {
+            let start = c * chunk_size;
+            let end = ((c + 1) * chunk_size).min(n);
+            let mut v = Vec::new();
+            for i in memchr::memchr_iter(b'\n', &bytes[start..end]) {
+                let abs = start + i + 1;
+                if abs < n {
+                    v.push(abs as u64);
+                }
+            }
+            v
+        })
+        .collect();
+
+    let total_extra: usize = per_chunk.iter().map(|v| v.len()).sum();
+    out.reserve(total_extra);
+    for v in per_chunk {
+        out.extend(v);
+    }
+    out
+}
+
 fn trim_eol(mut raw: &[u8]) -> &[u8] {
     if raw.last() == Some(&b'\n') {
         raw = &raw[..raw.len() - 1];
@@ -273,6 +317,48 @@ mod tests {
         idx
     }
 
+    // Reference (sequential) implementation for cross-checking the parallel one.
+    fn find_line_starts_seq(bytes: &[u8]) -> Vec<u64> {
+        let n = bytes.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        let mut out = vec![0u64];
+        for i in memchr::memchr_iter(b'\n', bytes) {
+            if i + 1 < n {
+                out.push((i + 1) as u64);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn parallel_newline_scan_matches_sequential() {
+        // Small: single-chunk fast path.
+        for bytes in [
+            &b""[..],
+            &b"\n"[..],
+            &b"a"[..],
+            &b"a\n"[..],
+            &b"a\nb\nc"[..],
+            &b"a\r\nb\r\n"[..],
+            &b"\n\n\n"[..],
+        ] {
+            assert_eq!(
+                find_line_starts_parallel(bytes),
+                find_line_starts_seq(bytes),
+                "mismatch for {bytes:?}"
+            );
+        }
+        // Large: forces the parallel branch (> MIN_CHUNK_BYTES).
+        let mut big = Vec::with_capacity(8 * 1024 * 1024 + 3);
+        for i in 0..200_000 {
+            big.extend_from_slice(format!("line {i} contents here\n").as_bytes());
+        }
+        big.extend_from_slice(b"no trailing newline");
+        assert_eq!(find_line_starts_parallel(&big), find_line_starts_seq(&big));
+    }
+
     #[test]
     fn indexes_lines_ts_and_levels() {
         let mut content = Vec::new();
@@ -307,6 +393,39 @@ mod tests {
         // Clamped to bounds.
         let all = idx.get_range(0, 999);
         assert_eq!(all.len(), 4);
+    }
+
+    #[test]
+    #[ignore = "manual perf check: parallel vs sequential newline scan on ws.log"]
+    fn bench_newline_scan() {
+        let path = std::path::Path::new("/tmp/ws.log");
+        if !path.exists() {
+            eprintln!("skip: no /tmp/ws.log");
+            return;
+        }
+        let f = File::open(path).unwrap();
+        let mmap = unsafe { memmap2::Mmap::map(&f) }.unwrap();
+        let bytes: &[u8] = &mmap[..];
+        // Warm the page cache once so both runs read from RAM.
+        let _ = find_line_starts_seq(bytes).len();
+
+        let t = std::time::Instant::now();
+        let seq = find_line_starts_seq(bytes);
+        let t_seq = t.elapsed();
+
+        let t = std::time::Instant::now();
+        let par = find_line_starts_parallel(bytes);
+        let t_par = t.elapsed();
+
+        assert_eq!(seq, par, "parallel result differs from sequential");
+        eprintln!(
+            "{} bytes / {} lines · sequential {:?} · parallel {:?} ({} threads)",
+            bytes.len(),
+            seq.len(),
+            t_seq,
+            t_par,
+            rayon::current_num_threads()
+        );
     }
 
     #[test]
