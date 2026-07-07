@@ -11,3 +11,4 @@
 
 # Never commit local restart helper (per project convention)
 restart.sh
+/dist/
