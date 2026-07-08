@@ -19,10 +19,16 @@ install). Design goals:
 
 ```
 zercher <logfile> [--view <string>]
+zercher -                     # read log from stdin (explicit)
+<cmd> | zercher               # read log from stdin (implicit; less-style)
 ```
 
 `--view` restores filters, highlights, bookmarks, revealed ranges, the search, and
 the selected line — e.g. a string copied from the web app's address bar.
+
+When reading from stdin (a pipe or `-`), zercher spools it to a temp file first,
+then indexes it as usual — so `kubectl logs foo | zercher`, `zcat huge.gz | zercher`,
+etc. work out of the box. The temp file is deleted on exit.
 
 ## Keys
 

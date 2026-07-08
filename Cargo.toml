@@ -43,6 +43,7 @@ memchr = "2"
 rayon = "1"
 form_urlencoded = "1"
 ratatui = "0.29"
+tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

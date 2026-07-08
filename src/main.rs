@@ -1,11 +1,12 @@
 //! zercher — a smarter terminal log viewer (binary entry point).
 //!
-//! Parses args, guards against a non-TTY, indexes the file, and hands off to the
-//! TUI. `--view <string>` restores a saved view (byte-compatible with the web
-//! app's shareable URL).
+//! Parses args, spools stdin to a temp file when the source is a pipe, guards
+//! against a non-TTY *output*, indexes the file, and hands off to the TUI.
+//! `--view <string>` restores a saved view (byte-compatible with the web app's
+//! shareable URL).
 
-use std::io::{IsTerminal, Write};
-use std::path::Path;
+use std::io::{self, IsTerminal, Read, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use zercher::engine::index::{IndexOptions, LineIndex};
@@ -17,6 +18,8 @@ zercher — a less-but-smarter terminal log viewer
 
 USAGE:
     zercher <logfile> [--view <string>]
+    zercher -                        # read log from stdin (explicit)
+    <cmd> | zercher                  # read log from stdin (implicit)
 
 OPTIONS:
     --view <string>    Restore a saved view (filters, highlights, bookmarks,
@@ -27,10 +30,18 @@ OPTIONS:
 Press ? inside the viewer for the interactive keybinding cheat-sheet.
 ";
 
+// Kept alive for the process lifetime when we spooled stdin, so its Drop deletes
+// the temp file on exit (normal or panic). Bound but unused after this point.
+#[allow(dead_code)]
+enum SourceGuard {
+    File,
+    Spooled(tempfile::TempPath),
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let mut file: Option<String> = None;
+    let mut file_arg: Option<String> = None;
     let mut view_str: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
@@ -43,34 +54,57 @@ fn main() -> ExitCode {
             view_str = args.get(i).cloned();
         } else if let Some(v) = a.strip_prefix("--view=") {
             view_str = Some(v.to_string());
-        } else if file.is_none() && !a.starts_with('-') {
-            file = Some(a.clone());
+        } else if file_arg.is_none() && (a == "-" || !a.starts_with('-')) {
+            file_arg = Some(a.clone());
         }
         i += 1;
     }
 
-    let Some(file) = file else {
-        eprintln!("zercher: no log file given\n\n{USAGE}");
+    // Output must be a TTY (we draw a UI). Input from stdin is fine — that's
+    // the whole point of piping; crossterm reads keyboard from /dev/tty on Unix.
+    if !io::stdout().is_terminal() {
+        eprintln!("zercher: stdout is not a TTY — run in an interactive terminal");
         return ExitCode::FAILURE;
+    }
+
+    // Decide the source: explicit `-`, no arg + piped stdin, or a real file.
+    let (path, display_name, _guard) = match file_arg.as_deref() {
+        Some("-") => match spool_stdin() {
+            Ok((p, g)) => (p, "(stdin)".to_string(), g),
+            Err(e) => {
+                eprintln!("zercher: could not spool stdin: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Some(f) => {
+            let p = PathBuf::from(f);
+            if !p.is_file() {
+                eprintln!("zercher: no such file: {f}");
+                return ExitCode::FAILURE;
+            }
+            (p, f.to_string(), SourceGuard::File)
+        }
+        None => {
+            if io::stdin().is_terminal() {
+                eprintln!("zercher: no log file given\n\n{USAGE}");
+                return ExitCode::FAILURE;
+            }
+            match spool_stdin() {
+                Ok((p, g)) => (p, "(stdin)".to_string(), g),
+                Err(e) => {
+                    eprintln!("zercher: could not spool stdin: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
     };
-
-    if !io_is_tty() {
-        eprintln!("zercher: stdin/stdout is not a TTY — run in an interactive terminal");
-        return ExitCode::FAILURE;
-    }
-
-    let path = Path::new(&file);
-    if !path.is_file() {
-        eprintln!("zercher: no such file: {file}");
-        return ExitCode::FAILURE;
-    }
 
     let initial_view = view_str.as_deref().map(parse_view);
 
     // Size the rayon pool to the file before any parallel work: small files skip
     // the pool overhead, huge files scale up to every core. Must run before the
     // first parallel call (the index scan); build_global is a one-time setup.
-    let file_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let file_len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     let _ = rayon::ThreadPoolBuilder::new()
         .num_threads(zercher::plan_threads(file_len, cores))
@@ -78,27 +112,75 @@ fn main() -> ExitCode {
 
     // Transient status on the normal screen (no newline), erased once indexing is
     // done so it doesn't linger after the TUI (which uses the alternate screen) exits.
-    eprint!("indexing {file}…");
-    let _ = std::io::stderr().flush();
-    let index = match LineIndex::open(path, IndexOptions::default(), |_pct| {}) {
+    eprint!("indexing {display_name}…");
+    let _ = io::stderr().flush();
+    let index = match LineIndex::open(&path, IndexOptions::default(), |_pct| {}) {
         Ok(idx) => idx,
         Err(e) => {
-            eprintln!("\r\x1b[2Kzercher: could not read {file}: {e}");
+            eprintln!("\r\x1b[2Kzercher: could not read {display_name}: {e}");
             return ExitCode::FAILURE;
         }
     };
     eprint!("\r\x1b[2K"); // carriage return + clear line
-    let _ = std::io::stderr().flush();
+    let _ = io::stderr().flush();
 
-    match tui::run(index, file, initial_view) {
+    let code = match tui::run(index, display_name, initial_view) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("zercher: {e}");
             ExitCode::FAILURE
         }
-    }
+    };
+    // _guard drops here → temp file (if any) unlinked.
+    code
 }
 
-fn io_is_tty() -> bool {
-    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+// Spool stdin to a temp file. Shows a byte-count progress line on stderr, erased
+// on completion so it doesn't linger. Returns the temp file's path plus a Drop
+// guard that unlinks it when the process ends.
+fn spool_stdin() -> io::Result<(PathBuf, SourceGuard)> {
+    let named = tempfile::Builder::new()
+        .prefix("zercher-stdin-")
+        .suffix(".log")
+        .tempfile()?;
+    let mut writer = io::BufWriter::new(named.as_file());
+    let mut reader = io::stdin().lock();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    let mut next_report: u64 = 0;
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        writer.write_all(&buf[..n])?;
+        total += n as u64;
+        if total >= next_report {
+            eprint!("\r\x1b[2Kspooling stdin… {}", fmt_bytes(total));
+            let _ = io::stderr().flush();
+            next_report = total + 1_048_576; // 1 MiB
+        }
+    }
+    writer.flush()?;
+    drop(writer);
+    named.as_file().sync_all()?;
+    eprint!("\r\x1b[2K"); // erase the "spooling…" line
+    let _ = io::stderr().flush();
+    let (_file, path) = named.keep().map_err(io::Error::from)?;
+    // Re-wrap the kept path in a TempPath so Drop still unlinks it on exit.
+    let tp = tempfile::TempPath::try_from_path(&path)?;
+    Ok((path, SourceGuard::Spooled(tp)))
+}
+
+fn fmt_bytes(n: u64) -> String {
+    const K: u64 = 1024;
+    if n < K {
+        format!("{n} B")
+    } else if n < K * K {
+        format!("{:.1} KiB", n as f64 / K as f64)
+    } else if n < K * K * K {
+        format!("{:.1} MiB", n as f64 / (K * K) as f64)
+    } else {
+        format!("{:.2} GiB", n as f64 / (K * K * K) as f64)
+    }
 }
