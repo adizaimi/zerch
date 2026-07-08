@@ -106,11 +106,12 @@ pub struct App {
     overlay_scroll: usize,
     overlay_avail: usize, // last-rendered overlay inner height
     menu_sel: usize,
-    // Cached per-term hit counts, shown next to each menu row. `None` = not
-    // computed yet or invalidated; recomputed the next time the menu renders.
-    // Inner `None` = term is empty or its regex is invalid.
-    menu_filter_counts: Option<Vec<Option<usize>>>,
-    menu_highlight_counts: Option<Vec<Option<usize>>>,
+    // Per-term hit counts, kept in lock-step with `filters` and `highlights`:
+    // computed once at add-time and surgically updated when a term's properties
+    // change (regex/case/negate). Menu render is O(rows) — no scanning.
+    // Inner `None` = empty term or bad regex.
+    filter_counts: Vec<Option<usize>>,
+    highlight_counts: Vec<Option<usize>>,
 
     confirm_quit: bool,
     pub should_quit: bool,
@@ -163,8 +164,8 @@ impl App {
             overlay_scroll: 0,
             overlay_avail: 0,
             menu_sel: 0,
-            menu_filter_counts: None,
-            menu_highlight_counts: None,
+            filter_counts: Vec::new(),
+            highlight_counts: Vec::new(),
             confirm_quit: false,
             should_quit: false,
             suspend: false,
@@ -177,6 +178,7 @@ impl App {
         self.filter_mode = v.filter_mode;
         self.filters = v.filters;
         self.highlights = v.highlights;
+        self.rebuild_counts();
         self.bookmarks = v.bookmarks.into_iter().collect();
         self.visible_lines = v.visible.into_iter().collect();
         self.search_regex = v.search_regex;
@@ -442,14 +444,16 @@ impl App {
         }
         push_history(&mut self.history, term);
         let color = HIGHLIGHT_PALETTE[self.highlights.len() % HIGHLIGHT_PALETTE.len()].to_string();
-        self.highlights.push(HighlightEntry {
+        let entry = HighlightEntry {
             term: term.to_string(),
             color,
             enabled: true,
             case_sensitive: self.input_case,
             regex: self.input_regex,
-        });
-        self.invalidate_menu_counts();
+        };
+        let count = self.compute_highlight_count(&entry);
+        self.highlights.push(entry);
+        self.highlight_counts.push(count);
     }
 
     // --- filters / bookmarks / gaps -------------------------------------------
@@ -516,17 +520,19 @@ impl App {
             return;
         }
         push_history(&mut self.history, term);
-        self.filters.push(FilterEntry {
+        let entry = FilterEntry {
             term: term.to_string(),
             enabled: true,
             case_sensitive: self.input_case,
             regex: self.input_regex,
             negate: false,
-        });
+        };
+        let count = self.compute_filter_count(&entry);
+        self.filters.push(entry);
+        self.filter_counts.push(count);
         self.recompute();
         self.pos = 0;
         self.cursor = 0;
-        self.invalidate_menu_counts();
     }
 
     fn toggle_filter_mode(&mut self) {
@@ -850,20 +856,6 @@ impl App {
 
     fn handle_menu_key(&mut self, key: KeyEvent) {
         let total = self.filters.len() + self.highlights.len();
-        // Any key that could change filter/highlight state invalidates counts.
-        if matches!(
-            key.code,
-            KeyCode::Char(' ')
-                | KeyCode::Char('r')
-                | KeyCode::Char('i')
-                | KeyCode::Char('x')
-                | KeyCode::Char('d')
-                | KeyCode::Char('C')
-                | KeyCode::Char('c')
-                | KeyCode::Char('B')
-        ) {
-            self.invalidate_menu_counts();
-        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('m') | KeyCode::Esc => self.overlay = Overlay::None,
             KeyCode::Char('j') | KeyCode::Down => {
@@ -883,31 +875,38 @@ impl App {
             KeyCode::Char('r') => {
                 if let Some(i) = self.sel_filter() {
                     self.filters[i].regex = !self.filters[i].regex;
+                    self.filter_counts[i] = self.compute_filter_count(&self.filters[i]);
                     self.refresh_preserving();
                 } else if let Some(j) = self.sel_highlight() {
                     self.highlights[j].regex = !self.highlights[j].regex;
+                    self.highlight_counts[j] = self.compute_highlight_count(&self.highlights[j]);
                 }
             }
             KeyCode::Char('i') => {
                 if let Some(i) = self.sel_filter() {
                     self.filters[i].case_sensitive = !self.filters[i].case_sensitive;
+                    self.filter_counts[i] = self.compute_filter_count(&self.filters[i]);
                     self.refresh_preserving();
                 } else if let Some(j) = self.sel_highlight() {
                     self.highlights[j].case_sensitive = !self.highlights[j].case_sensitive;
+                    self.highlight_counts[j] = self.compute_highlight_count(&self.highlights[j]);
                 }
             }
             KeyCode::Char('x') => {
                 if let Some(i) = self.sel_filter() {
                     self.filters[i].negate = !self.filters[i].negate;
+                    self.filter_counts[i] = self.compute_filter_count(&self.filters[i]);
                     self.refresh_preserving();
                 }
             }
             KeyCode::Char('d') => {
                 if let Some(i) = self.sel_filter() {
                     self.filters.remove(i);
+                    self.filter_counts.remove(i);
                     self.refresh_preserving();
                 } else if let Some(j) = self.sel_highlight() {
                     self.highlights.remove(j);
+                    self.highlight_counts.remove(j);
                 }
                 let total = self.filters.len() + self.highlights.len();
                 self.menu_sel = self.menu_sel.min(total.saturating_sub(1));
@@ -915,6 +914,7 @@ impl App {
             KeyCode::Char('o') => self.toggle_filter_mode(),
             KeyCode::Char('C') => {
                 self.filters.clear();
+                self.filter_counts.clear();
                 self.recompute();
                 self.pos = 0;
                 self.cursor = 0;
@@ -922,6 +922,7 @@ impl App {
             }
             KeyCode::Char('c') => {
                 self.highlights.clear();
+                self.highlight_counts.clear();
                 self.menu_sel = self.menu_sel.min(self.filters.len().saturating_sub(1));
             }
             KeyCode::Char('B') => {
@@ -1007,57 +1008,48 @@ impl App {
         self.overlay_scroll = 0;
     }
 
-    // Invalidate the cached hit counts. Called on menu open and any state change
-    // that would move the numbers (add/toggle/regex/case/negate/delete).
-    fn invalidate_menu_counts(&mut self) {
-        self.menu_filter_counts = None;
-        self.menu_highlight_counts = None;
+    // Standalone hit count for a single filter/highlight term.
+    fn compute_filter_count(&self, f: &FilterEntry) -> Option<usize> {
+        if f.term.is_empty() {
+            return None;
+        }
+        let stack = [SearchTerm::new(&f.term, Op::And)
+            .case(f.case_sensitive)
+            .rx(f.regex)
+            .neg(f.negate)];
+        search(&self.index, &stack, &Scope::default())
+            .ok()
+            .map(|r| r.total_matches)
     }
 
-    // Compute per-term hit counts once. Each is a full scan; ~200 ms per term on
-    // a 2M-line file, so we only run this when the menu opens or after an edit.
-    fn ensure_menu_counts(&mut self) {
-        if self.menu_filter_counts.is_none() {
-            let counts = self
-                .filters
-                .iter()
-                .map(|f| {
-                    if f.term.is_empty() {
-                        return None;
-                    }
-                    let stack = [SearchTerm::new(&f.term, Op::And)
-                        .case(f.case_sensitive)
-                        .rx(f.regex)
-                        .neg(f.negate)];
-                    search(&self.index, &stack, &Scope::default())
-                        .ok()
-                        .map(|r| r.total_matches)
-                })
-                .collect();
-            self.menu_filter_counts = Some(counts);
+    fn compute_highlight_count(&self, h: &HighlightEntry) -> Option<usize> {
+        if h.term.is_empty() {
+            return None;
         }
-        if self.menu_highlight_counts.is_none() {
-            let counts = self
-                .highlights
-                .iter()
-                .map(|h| {
-                    if h.term.is_empty() {
-                        return None;
-                    }
-                    let stack = [SearchTerm::new(&h.term, Op::And)
-                        .case(h.case_sensitive)
-                        .rx(h.regex)];
-                    search(&self.index, &stack, &Scope::default())
-                        .ok()
-                        .map(|r| r.total_matches)
-                })
-                .collect();
-            self.menu_highlight_counts = Some(counts);
-        }
+        let stack = [SearchTerm::new(&h.term, Op::And)
+            .case(h.case_sensitive)
+            .rx(h.regex)];
+        search(&self.index, &stack, &Scope::default())
+            .ok()
+            .map(|r| r.total_matches)
+    }
+
+    // Rebuild both count vectors from scratch. Only used when the whole state is
+    // loaded at once (e.g. --view restore); menu open doesn't call this.
+    fn rebuild_counts(&mut self) {
+        self.filter_counts = self
+            .filters
+            .iter()
+            .map(|f| self.compute_filter_count(f))
+            .collect();
+        self.highlight_counts = self
+            .highlights
+            .iter()
+            .map(|h| self.compute_highlight_count(h))
+            .collect();
     }
 
     fn render_menu(&mut self, f: &mut Frame) {
-        self.ensure_menu_counts();
         let area = f.area();
         let block = Block::bordered().title(
             " Menu · space toggle · r rx · i case · x neg · d del · C/c/B clear · o AND/OR · f/h add · s syntax · e view · g grep · q close ",
@@ -1076,9 +1068,12 @@ impl App {
         if self.filters.is_empty() {
             lines.push(Line::from(Span::styled("  (none)", Style::default().fg(Color::DarkGray))));
         }
-        let fc = self.menu_filter_counts.as_deref().unwrap_or(&[]);
         for (i, filt) in self.filters.iter().enumerate() {
-            lines.push(filter_row(filt, self.menu_sel == i, fc.get(i).copied().flatten()));
+            lines.push(filter_row(
+                filt,
+                self.menu_sel == i,
+                self.filter_counts.get(i).copied().flatten(),
+            ));
         }
 
         lines.push(Line::from(String::new()));
@@ -1089,12 +1084,11 @@ impl App {
         if self.highlights.is_empty() {
             lines.push(Line::from(Span::styled("  (none)", Style::default().fg(Color::DarkGray))));
         }
-        let hc = self.menu_highlight_counts.as_deref().unwrap_or(&[]);
         for (j, hl) in self.highlights.iter().enumerate() {
             lines.push(highlight_row(
                 hl,
                 self.menu_sel == nf + j,
-                hc.get(j).copied().flatten(),
+                self.highlight_counts.get(j).copied().flatten(),
             ));
         }
 
@@ -1334,7 +1328,6 @@ impl App {
             KeyCode::Char('m') => {
                 self.overlay = Overlay::Menu;
                 self.menu_sel = 0;
-                self.invalidate_menu_counts();
             }
             KeyCode::Char('T') => self.toggle_hist(),
             KeyCode::Char('t') => {
@@ -2076,12 +2069,13 @@ mod tests {
         app.add_filter("error");
         app.add_highlight("o");
         // Menu open: counts computed lazily on next ensure/render call.
-        app.invalidate_menu_counts();
-        app.ensure_menu_counts();
-        let fc = app.menu_filter_counts.as_ref().unwrap();
-        let hc = app.menu_highlight_counts.as_ref().unwrap();
-        assert_eq!(fc, &vec![Some(2)]); // "error" appears on 2 lines
-        assert_eq!(hc, &vec![Some(4)]); // "o" appears on all 4 lines (case-insensitive)
+        // Counts populated at add-time, no scan on menu open.
+        assert_eq!(app.filter_counts, vec![Some(2)]); // "error" on lines 1 & 3
+        assert_eq!(app.highlight_counts, vec![Some(4)]); // "o" case-insensitive: all 4 lines
+        // Toggle regex on the filter → recount that slot only.
+        app.filters[0].regex = true;
+        app.filter_counts[0] = app.compute_filter_count(&app.filters[0]);
+        assert_eq!(app.filter_counts, vec![Some(2)]);
     }
 
     #[test]
