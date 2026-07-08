@@ -45,9 +45,12 @@ pub enum SyntaxTok {
     Null,
 }
 
-// logfmt pair: identifier `=` (quoted-string | non-whitespace run).
+// logfmt pair: identifier `=` (quoted-string | run of non-separator chars).
+// The unquoted value stops at whitespace and at delimiters commonly used to
+// separate pairs (`,` `;`) or to close a wrapping context (`)`, `]`, `}`), so
+// e.g. `a=1,b=2` tokenizes as two pairs instead of `a` = `1,b=2`.
 static LOGFMT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"([A-Za-z_][A-Za-z0-9_.\-]*)=("(?:[^"\\]|\\.)*"|[^\s]+)"#).unwrap()
+    Regex::new(r#"([A-Za-z_][A-Za-z0-9_.\-]*)=("(?:[^"\\]|\\.)*"|[^\s,;)\]}]+)"#).unwrap()
 });
 
 // Char-index of a byte offset inside `text`.
@@ -396,6 +399,22 @@ mod tests {
 
         // Plain prose: no ranges (avoids noise).
         assert!(syntax_ranges("just a plain log message here").is_empty());
+
+        // Comma-separated pairs (no space between): two independent pairs, not
+        // one pair with value `1,b=2`.
+        let src = "a=1,b=2";
+        let r = syntax_ranges(src);
+        let toks: Vec<(&str, SyntaxTok)> =
+            r.iter().map(|(s, e, k)| (&src[*s..*e], *k)).collect();
+        assert_eq!(
+            toks,
+            vec![
+                ("a", SyntaxTok::Key),
+                ("1", SyntaxTok::Num),
+                ("b", SyntaxTok::Key),
+                ("2", SyntaxTok::Num),
+            ]
+        );
     }
 
     #[test]
