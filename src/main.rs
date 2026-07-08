@@ -68,9 +68,13 @@ fn main() -> ExitCode {
     }
 
     // Decide the source: explicit `-`, no arg + piped stdin, or a real file.
+    let mut from_pipe = false;
     let (path, display_name, _guard) = match file_arg.as_deref() {
         Some("-") => match spool_stdin() {
-            Ok((p, g)) => (p, "(stdin)".to_string(), g),
+            Ok((p, g)) => {
+                from_pipe = true;
+                (p, "(stdin)".to_string(), g)
+            }
             Err(e) => {
                 eprintln!("zercher: could not spool stdin: {e}");
                 return ExitCode::FAILURE;
@@ -90,7 +94,10 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             match spool_stdin() {
-                Ok((p, g)) => (p, "(stdin)".to_string(), g),
+                Ok((p, g)) => {
+                    from_pipe = true;
+                    (p, "(stdin)".to_string(), g)
+                }
                 Err(e) => {
                     eprintln!("zercher: could not spool stdin: {e}");
                     return ExitCode::FAILURE;
@@ -98,6 +105,16 @@ fn main() -> ExitCode {
             }
         }
     };
+
+    // When the log came from a pipe, fd 0 is that pipe — crossterm can't use it
+    // for keyboard input or raw mode. Redirect fd 0 to /dev/tty so all further
+    // stdin reads come from the terminal.
+    if from_pipe {
+        if let Err(e) = redirect_stdin_to_tty() {
+            eprintln!("zercher: could not open /dev/tty for keyboard input: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
 
     let initial_view = view_str.as_deref().map(parse_view);
 
@@ -170,6 +187,26 @@ fn spool_stdin() -> io::Result<(PathBuf, SourceGuard)> {
     // Re-wrap the kept path in a TempPath so Drop still unlinks it on exit.
     let tp = tempfile::TempPath::try_from_path(&path)?;
     Ok((path, SourceGuard::Spooled(tp)))
+}
+
+// Replace fd 0 with a fresh descriptor to /dev/tty so crossterm's stdin-based
+// raw mode + key reads work when the log itself came in through a pipe.
+#[cfg(unix)]
+fn redirect_stdin_to_tty() -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let tty = std::fs::OpenOptions::new().read(true).open("/dev/tty")?;
+    let ret = unsafe { libc::dup2(tty.as_raw_fd(), 0) };
+    if ret < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn redirect_stdin_to_tty() -> io::Result<()> {
+    Err(io::Error::other(
+        "piped input requires /dev/tty, which is not available on this platform",
+    ))
 }
 
 fn fmt_bytes(n: u64) -> String {
