@@ -106,6 +106,11 @@ pub struct App {
     overlay_scroll: usize,
     overlay_avail: usize, // last-rendered overlay inner height
     menu_sel: usize,
+    // Cached per-term hit counts, shown next to each menu row. `None` = not
+    // computed yet or invalidated; recomputed the next time the menu renders.
+    // Inner `None` = term is empty or its regex is invalid.
+    menu_filter_counts: Option<Vec<Option<usize>>>,
+    menu_highlight_counts: Option<Vec<Option<usize>>>,
 
     confirm_quit: bool,
     pub should_quit: bool,
@@ -158,6 +163,8 @@ impl App {
             overlay_scroll: 0,
             overlay_avail: 0,
             menu_sel: 0,
+            menu_filter_counts: None,
+            menu_highlight_counts: None,
             confirm_quit: false,
             should_quit: false,
             suspend: false,
@@ -442,6 +449,7 @@ impl App {
             case_sensitive: self.input_case,
             regex: self.input_regex,
         });
+        self.invalidate_menu_counts();
     }
 
     // --- filters / bookmarks / gaps -------------------------------------------
@@ -518,6 +526,7 @@ impl App {
         self.recompute();
         self.pos = 0;
         self.cursor = 0;
+        self.invalidate_menu_counts();
     }
 
     fn toggle_filter_mode(&mut self) {
@@ -841,6 +850,20 @@ impl App {
 
     fn handle_menu_key(&mut self, key: KeyEvent) {
         let total = self.filters.len() + self.highlights.len();
+        // Any key that could change filter/highlight state invalidates counts.
+        if matches!(
+            key.code,
+            KeyCode::Char(' ')
+                | KeyCode::Char('r')
+                | KeyCode::Char('i')
+                | KeyCode::Char('x')
+                | KeyCode::Char('d')
+                | KeyCode::Char('C')
+                | KeyCode::Char('c')
+                | KeyCode::Char('B')
+        ) {
+            self.invalidate_menu_counts();
+        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('m') | KeyCode::Esc => self.overlay = Overlay::None,
             KeyCode::Char('j') | KeyCode::Down => {
@@ -984,7 +1007,57 @@ impl App {
         self.overlay_scroll = 0;
     }
 
+    // Invalidate the cached hit counts. Called on menu open and any state change
+    // that would move the numbers (add/toggle/regex/case/negate/delete).
+    fn invalidate_menu_counts(&mut self) {
+        self.menu_filter_counts = None;
+        self.menu_highlight_counts = None;
+    }
+
+    // Compute per-term hit counts once. Each is a full scan; ~200 ms per term on
+    // a 2M-line file, so we only run this when the menu opens or after an edit.
+    fn ensure_menu_counts(&mut self) {
+        if self.menu_filter_counts.is_none() {
+            let counts = self
+                .filters
+                .iter()
+                .map(|f| {
+                    if f.term.is_empty() {
+                        return None;
+                    }
+                    let stack = [SearchTerm::new(&f.term, Op::And)
+                        .case(f.case_sensitive)
+                        .rx(f.regex)
+                        .neg(f.negate)];
+                    search(&self.index, &stack, &Scope::default())
+                        .ok()
+                        .map(|r| r.total_matches)
+                })
+                .collect();
+            self.menu_filter_counts = Some(counts);
+        }
+        if self.menu_highlight_counts.is_none() {
+            let counts = self
+                .highlights
+                .iter()
+                .map(|h| {
+                    if h.term.is_empty() {
+                        return None;
+                    }
+                    let stack = [SearchTerm::new(&h.term, Op::And)
+                        .case(h.case_sensitive)
+                        .rx(h.regex)];
+                    search(&self.index, &stack, &Scope::default())
+                        .ok()
+                        .map(|r| r.total_matches)
+                })
+                .collect();
+            self.menu_highlight_counts = Some(counts);
+        }
+    }
+
     fn render_menu(&mut self, f: &mut Frame) {
+        self.ensure_menu_counts();
         let area = f.area();
         let block = Block::bordered().title(
             " Menu · space toggle · r rx · i case · x neg · d del · C/c/B clear · o AND/OR · f/h add · s syntax · e view · g grep · q close ",
@@ -1003,8 +1076,9 @@ impl App {
         if self.filters.is_empty() {
             lines.push(Line::from(Span::styled("  (none)", Style::default().fg(Color::DarkGray))));
         }
+        let fc = self.menu_filter_counts.as_deref().unwrap_or(&[]);
         for (i, filt) in self.filters.iter().enumerate() {
-            lines.push(filter_row(filt, self.menu_sel == i));
+            lines.push(filter_row(filt, self.menu_sel == i, fc.get(i).copied().flatten()));
         }
 
         lines.push(Line::from(String::new()));
@@ -1015,8 +1089,13 @@ impl App {
         if self.highlights.is_empty() {
             lines.push(Line::from(Span::styled("  (none)", Style::default().fg(Color::DarkGray))));
         }
+        let hc = self.menu_highlight_counts.as_deref().unwrap_or(&[]);
         for (j, hl) in self.highlights.iter().enumerate() {
-            lines.push(highlight_row(hl, self.menu_sel == nf + j));
+            lines.push(highlight_row(
+                hl,
+                self.menu_sel == nf + j,
+                hc.get(j).copied().flatten(),
+            ));
         }
 
         lines.push(Line::from(String::new()));
@@ -1255,6 +1334,7 @@ impl App {
             KeyCode::Char('m') => {
                 self.overlay = Overlay::Menu;
                 self.menu_sel = 0;
+                self.invalidate_menu_counts();
             }
             KeyCode::Char('T') => self.toggle_hist(),
             KeyCode::Char('t') => {
@@ -1697,15 +1777,35 @@ fn help_lines() -> Vec<Line<'static>> {
         .collect()
 }
 
-fn filter_row(f: &FilterEntry, selected: bool) -> Line<'static> {
+// Format a hit count with thousands separators; "—" for bad regex / empty term.
+fn fmt_count(c: Option<usize>) -> String {
+    match c {
+        Some(n) => {
+            let s = n.to_string();
+            let bytes = s.as_bytes();
+            let mut out = String::with_capacity(s.len() + s.len() / 3);
+            for (i, b) in bytes.iter().enumerate() {
+                if i > 0 && (bytes.len() - i) % 3 == 0 {
+                    out.push(',');
+                }
+                out.push(*b as char);
+            }
+            format!("{out:>9}")
+        }
+        None => format!("{:>9}", "—"),
+    }
+}
+
+fn filter_row(f: &FilterEntry, selected: bool, count: Option<usize>) -> Line<'static> {
     let cur = if selected { "▸ " } else { "  " };
     let en = if f.enabled { "[on]" } else { "[· ]" };
     let rx = if f.regex { ".*" } else { "ab" };
     let ca = if f.case_sensitive { "Aa" } else { "aa" };
     let ng = if f.negate { " ≠" } else { "" };
     let bad = f.regex && bad_regex(&f.term);
+    let cnt = fmt_count(if bad { None } else { count });
     let text = format!(
-        "{cur}{en} {rx} {ca}{ng}  {}{}",
+        "{cur}{en} {rx} {ca}{ng} {cnt}  {}{}",
         f.term,
         if bad { " (bad regex)" } else { "" }
     );
@@ -1723,12 +1823,14 @@ fn filter_row(f: &FilterEntry, selected: bool) -> Line<'static> {
     Line::from(Span::styled(text, st))
 }
 
-fn highlight_row(h: &HighlightEntry, selected: bool) -> Line<'static> {
+fn highlight_row(h: &HighlightEntry, selected: bool, count: Option<usize>) -> Line<'static> {
     let cur = if selected { "▸ " } else { "  " };
     let en = if h.enabled { "[on]" } else { "[· ]" };
     let rx = if h.regex { ".*" } else { "ab" };
     let ca = if h.case_sensitive { "Aa" } else { "aa" };
     let (r, g, b) = hex_rgb(&h.color);
+    let bad = h.regex && bad_regex(&h.term);
+    let cnt = fmt_count(if bad { None } else { count });
     let mut st = if h.enabled {
         Style::default()
     } else {
@@ -1740,7 +1842,7 @@ fn highlight_row(h: &HighlightEntry, selected: bool) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{cur}{en} "), st),
         Span::styled("██", Style::default().fg(Color::Rgb(r, g, b))),
-        Span::styled(format!(" {rx} {ca}  {}", h.term), st),
+        Span::styled(format!(" {rx} {ca} {cnt}  {}", h.term), st),
     ])
 }
 
@@ -1966,6 +2068,20 @@ mod tests {
         let lines = displayed_lines(&app);
         assert!(lines.contains(&1) && lines.contains(&2));
         assert!(!lines.contains(&4)); // 5h line is in a later bucket
+    }
+
+    #[test]
+    fn menu_counts_filters_and_highlights() {
+        let mut app = app_from(&["error one", "ok two", "error three", "warn four"]);
+        app.add_filter("error");
+        app.add_highlight("o");
+        // Menu open: counts computed lazily on next ensure/render call.
+        app.invalidate_menu_counts();
+        app.ensure_menu_counts();
+        let fc = app.menu_filter_counts.as_ref().unwrap();
+        let hc = app.menu_highlight_counts.as_ref().unwrap();
+        assert_eq!(fc, &vec![Some(2)]); // "error" appears on 2 lines
+        assert_eq!(hc, &vec![Some(4)]); // "o" appears on all 4 lines (case-insensitive)
     }
 
     #[test]
