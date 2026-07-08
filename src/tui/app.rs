@@ -467,6 +467,10 @@ impl App {
             return;
         }
         push_history(&mut self.history, term);
+        if self.highlights.iter().any(|h| h.term == term) {
+            self.hint = Some("highlight already exists");
+            return;
+        }
         let color = HIGHLIGHT_PALETTE[self.highlights.len() % HIGHLIGHT_PALETTE.len()].to_string();
         self.highlights.push(HighlightEntry {
             term: term.to_string(),
@@ -542,6 +546,10 @@ impl App {
             return;
         }
         push_history(&mut self.history, term);
+        if self.filters.iter().any(|f| f.term == term) {
+            self.hint = Some("filter already exists");
+            return;
+        }
         self.filters.push(FilterEntry {
             term: term.to_string(),
             enabled: true,
@@ -2102,6 +2110,18 @@ mod tests {
         let lines = displayed_lines(&app);
         assert!(lines.contains(&1) && lines.contains(&2));
         assert!(!lines.contains(&4)); // 5h line is in a later bucket
+    }
+
+    #[test]
+    fn duplicate_filter_or_highlight_is_dropped() {
+        let mut app = app_from(&["error one", "ok two", "error three"]);
+        app.add_filter("error");
+        app.add_filter("error"); // same string → skipped, hint set
+        assert_eq!(app.filters.len(), 1);
+        assert!(app.hint.is_some());
+        app.add_highlight("foo");
+        app.add_highlight("foo");
+        assert_eq!(app.highlights.len(), 1);
     }
 
     #[test]
