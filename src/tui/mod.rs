@@ -16,6 +16,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io;
+use std::time::Duration;
 
 // Restores the terminal when dropped, so a panic can't leave it in raw mode.
 struct TermGuard;
@@ -40,11 +41,31 @@ pub fn run(index: LineIndex, file_name: String, initial_view: Option<ViewState>)
 
     while !app.should_quit {
         terminal.draw(|f| app.render(f))?;
-        if let Event::Key(key) = event::read()? {
-            app.handle_key(key);
-            if app.suspend {
-                app.suspend = false;
-                suspend_to_background(&mut terminal)?;
+        // Cooperative scheduling: if input is pending, handle it immediately
+        // (user response wins). Otherwise, if we have per-term hit counts still
+        // to scan for the menu, do ONE scan and loop back to redraw so the count
+        // appears. Only when both queues are empty do we block for input.
+        let handled = if event::poll(Duration::from_millis(0))? {
+            if let Event::Key(key) = event::read()? {
+                app.handle_key(key);
+                if app.suspend {
+                    app.suspend = false;
+                    suspend_to_background(&mut terminal)?;
+                }
+            }
+            true
+        } else {
+            false
+        };
+        if !handled {
+            if app.has_pending_counts() {
+                app.compute_next_pending_count();
+            } else if let Event::Key(key) = event::read()? {
+                app.handle_key(key);
+                if app.suspend {
+                    app.suspend = false;
+                    suspend_to_background(&mut terminal)?;
+                }
             }
         }
     }

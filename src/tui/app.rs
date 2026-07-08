@@ -38,6 +38,28 @@ pub enum Mode {
 
 const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
+/// Per-term hit-count state. Distinguishes "not yet scanned" from "scanned but
+/// unavailable" (empty term or bad regex) so the menu can render "…" for pending
+/// vs "—" for failed, and the background scheduler knows when it's done.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Count {
+    Pending,
+    Value(usize),
+    Failed,
+}
+
+impl Count {
+    fn from_option(o: Option<usize>) -> Self {
+        match o {
+            Some(n) => Self::Value(n),
+            None => Self::Failed,
+        }
+    }
+    fn is_pending(self) -> bool {
+        matches!(self, Self::Pending)
+    }
+}
+
 // A full-screen overlay above the viewport. Text overlays (view string / shell
 // command) carry their own content; the rest render from a source line.
 enum Overlay {
@@ -106,12 +128,12 @@ pub struct App {
     overlay_scroll: usize,
     overlay_avail: usize, // last-rendered overlay inner height
     menu_sel: usize,
-    // Per-term hit counts, kept in lock-step with `filters` and `highlights`:
-    // computed once at add-time and surgically updated when a term's properties
-    // change (regex/case/negate). Menu render is O(rows) — no scanning.
-    // Inner `None` = empty term or bad regex.
-    filter_counts: Vec<Option<usize>>,
-    highlight_counts: Vec<Option<usize>>,
+    // Per-term hit counts, in lock-step with `filters` and `highlights`. New
+    // entries start `Pending`; the run-loop's idle time drains them by scanning
+    // one term per frame. Menu edits (regex/case/negate) reset the affected slot
+    // to `Pending` so it recomputes shortly after.
+    filter_counts: Vec<Count>,
+    highlight_counts: Vec<Count>,
 
     confirm_quit: bool,
     pub should_quit: bool,
@@ -178,7 +200,9 @@ impl App {
         self.filter_mode = v.filter_mode;
         self.filters = v.filters;
         self.highlights = v.highlights;
-        self.rebuild_counts();
+        // Counts are marked pending; the run-loop scheduler fills them in
+        // between frames so the viewport shows immediately.
+        self.reset_counts_pending();
         self.bookmarks = v.bookmarks.into_iter().collect();
         self.visible_lines = v.visible.into_iter().collect();
         self.search_regex = v.search_regex;
@@ -444,16 +468,14 @@ impl App {
         }
         push_history(&mut self.history, term);
         let color = HIGHLIGHT_PALETTE[self.highlights.len() % HIGHLIGHT_PALETTE.len()].to_string();
-        let entry = HighlightEntry {
+        self.highlights.push(HighlightEntry {
             term: term.to_string(),
             color,
             enabled: true,
             case_sensitive: self.input_case,
             regex: self.input_regex,
-        };
-        let count = self.compute_highlight_count(&entry);
-        self.highlights.push(entry);
-        self.highlight_counts.push(count);
+        });
+        self.highlight_counts.push(Count::Pending);
     }
 
     // --- filters / bookmarks / gaps -------------------------------------------
@@ -520,16 +542,14 @@ impl App {
             return;
         }
         push_history(&mut self.history, term);
-        let entry = FilterEntry {
+        self.filters.push(FilterEntry {
             term: term.to_string(),
             enabled: true,
             case_sensitive: self.input_case,
             regex: self.input_regex,
             negate: false,
-        };
-        let count = self.compute_filter_count(&entry);
-        self.filters.push(entry);
-        self.filter_counts.push(count);
+        });
+        self.filter_counts.push(Count::Pending);
         self.recompute();
         self.pos = 0;
         self.cursor = 0;
@@ -875,27 +895,27 @@ impl App {
             KeyCode::Char('r') => {
                 if let Some(i) = self.sel_filter() {
                     self.filters[i].regex = !self.filters[i].regex;
-                    self.filter_counts[i] = self.compute_filter_count(&self.filters[i]);
+                    self.filter_counts[i] = Count::Pending;
                     self.refresh_preserving();
                 } else if let Some(j) = self.sel_highlight() {
                     self.highlights[j].regex = !self.highlights[j].regex;
-                    self.highlight_counts[j] = self.compute_highlight_count(&self.highlights[j]);
+                    self.highlight_counts[j] = Count::Pending;
                 }
             }
             KeyCode::Char('i') => {
                 if let Some(i) = self.sel_filter() {
                     self.filters[i].case_sensitive = !self.filters[i].case_sensitive;
-                    self.filter_counts[i] = self.compute_filter_count(&self.filters[i]);
+                    self.filter_counts[i] = Count::Pending;
                     self.refresh_preserving();
                 } else if let Some(j) = self.sel_highlight() {
                     self.highlights[j].case_sensitive = !self.highlights[j].case_sensitive;
-                    self.highlight_counts[j] = self.compute_highlight_count(&self.highlights[j]);
+                    self.highlight_counts[j] = Count::Pending;
                 }
             }
             KeyCode::Char('x') => {
                 if let Some(i) = self.sel_filter() {
                     self.filters[i].negate = !self.filters[i].negate;
-                    self.filter_counts[i] = self.compute_filter_count(&self.filters[i]);
+                    self.filter_counts[i] = Count::Pending;
                     self.refresh_preserving();
                 }
             }
@@ -1034,19 +1054,37 @@ impl App {
             .map(|r| r.total_matches)
     }
 
-    // Rebuild both count vectors from scratch. Only used when the whole state is
-    // loaded at once (e.g. --view restore); menu open doesn't call this.
-    fn rebuild_counts(&mut self) {
-        self.filter_counts = self
-            .filters
-            .iter()
-            .map(|f| self.compute_filter_count(f))
-            .collect();
-        self.highlight_counts = self
-            .highlights
-            .iter()
-            .map(|h| self.compute_highlight_count(h))
-            .collect();
+    // Reset all counts to Pending. Cheap. The scheduler fills them in later.
+    fn reset_counts_pending(&mut self) {
+        self.filter_counts = vec![Count::Pending; self.filters.len()];
+        self.highlight_counts = vec![Count::Pending; self.highlights.len()];
+    }
+
+    /// True while there's still at least one term left to scan.
+    pub fn has_pending_counts(&self) -> bool {
+        self.filter_counts.iter().any(|c| c.is_pending())
+            || self.highlight_counts.iter().any(|c| c.is_pending())
+    }
+
+    /// Compute one pending count (one full scan). Called between frames from the
+    /// run loop's idle time, so counts fill in visibly without ever blocking the
+    /// first draw. Returns true if more work remains.
+    pub fn compute_next_pending_count(&mut self) -> bool {
+        for i in 0..self.filter_counts.len() {
+            if self.filter_counts[i].is_pending() {
+                self.filter_counts[i] =
+                    Count::from_option(self.compute_filter_count(&self.filters[i]));
+                return self.has_pending_counts();
+            }
+        }
+        for j in 0..self.highlight_counts.len() {
+            if self.highlight_counts[j].is_pending() {
+                self.highlight_counts[j] =
+                    Count::from_option(self.compute_highlight_count(&self.highlights[j]));
+                return self.has_pending_counts();
+            }
+        }
+        false
     }
 
     fn render_menu(&mut self, f: &mut Frame) {
@@ -1072,7 +1110,7 @@ impl App {
             lines.push(filter_row(
                 filt,
                 self.menu_sel == i,
-                self.filter_counts.get(i).copied().flatten(),
+                self.filter_counts.get(i).copied().unwrap_or(Count::Pending),
             ));
         }
 
@@ -1088,7 +1126,7 @@ impl App {
             lines.push(highlight_row(
                 hl,
                 self.menu_sel == nf + j,
-                self.highlight_counts.get(j).copied().flatten(),
+                self.highlight_counts.get(j).copied().unwrap_or(Count::Pending),
             ));
         }
 
@@ -1770,10 +1808,12 @@ fn help_lines() -> Vec<Line<'static>> {
         .collect()
 }
 
-// Format a hit count with thousands separators; "—" for bad regex / empty term.
-fn fmt_count(c: Option<usize>) -> String {
+// Format a hit count with thousands separators.
+// "…" = still pending (background scan hasn't reached this term yet).
+// "—" = failed (bad regex, empty term).
+fn fmt_count(c: Count) -> String {
     match c {
-        Some(n) => {
+        Count::Value(n) => {
             let s = n.to_string();
             let bytes = s.as_bytes();
             let mut out = String::with_capacity(s.len() + s.len() / 3);
@@ -1785,18 +1825,19 @@ fn fmt_count(c: Option<usize>) -> String {
             }
             format!("{out:>9}")
         }
-        None => format!("{:>9}", "—"),
+        Count::Pending => format!("{:>9}", "…"),
+        Count::Failed => format!("{:>9}", "—"),
     }
 }
 
-fn filter_row(f: &FilterEntry, selected: bool, count: Option<usize>) -> Line<'static> {
+fn filter_row(f: &FilterEntry, selected: bool, count: Count) -> Line<'static> {
     let cur = if selected { "▸ " } else { "  " };
     let en = if f.enabled { "[on]" } else { "[· ]" };
     let rx = if f.regex { ".*" } else { "ab" };
     let ca = if f.case_sensitive { "Aa" } else { "aa" };
     let ng = if f.negate { " ≠" } else { "" };
     let bad = f.regex && bad_regex(&f.term);
-    let cnt = fmt_count(if bad { None } else { count });
+    let cnt = fmt_count(if bad { Count::Failed } else { count });
     let text = format!(
         "{cur}{en} {rx} {ca}{ng} {cnt}  {}{}",
         f.term,
@@ -1816,14 +1857,14 @@ fn filter_row(f: &FilterEntry, selected: bool, count: Option<usize>) -> Line<'st
     Line::from(Span::styled(text, st))
 }
 
-fn highlight_row(h: &HighlightEntry, selected: bool, count: Option<usize>) -> Line<'static> {
+fn highlight_row(h: &HighlightEntry, selected: bool, count: Count) -> Line<'static> {
     let cur = if selected { "▸ " } else { "  " };
     let en = if h.enabled { "[on]" } else { "[· ]" };
     let rx = if h.regex { ".*" } else { "ab" };
     let ca = if h.case_sensitive { "Aa" } else { "aa" };
     let (r, g, b) = hex_rgb(&h.color);
     let bad = h.regex && bad_regex(&h.term);
-    let cnt = fmt_count(if bad { None } else { count });
+    let cnt = fmt_count(if bad { Count::Failed } else { count });
     let mut st = if h.enabled {
         Style::default()
     } else {
@@ -2064,18 +2105,26 @@ mod tests {
     }
 
     #[test]
-    fn menu_counts_filters_and_highlights() {
+    fn menu_counts_defer_and_drain() {
         let mut app = app_from(&["error one", "ok two", "error three", "warn four"]);
         app.add_filter("error");
         app.add_highlight("o");
-        // Menu open: counts computed lazily on next ensure/render call.
-        // Counts populated at add-time, no scan on menu open.
-        assert_eq!(app.filter_counts, vec![Some(2)]); // "error" on lines 1 & 3
-        assert_eq!(app.highlight_counts, vec![Some(4)]); // "o" case-insensitive: all 4 lines
-        // Toggle regex on the filter → recount that slot only.
+        // add_* does NOT scan; slots start pending so the first frame is fast.
+        assert_eq!(app.filter_counts, vec![Count::Pending]);
+        assert_eq!(app.highlight_counts, vec![Count::Pending]);
+        assert!(app.has_pending_counts());
+
+        // Drain one at a time (the run-loop calls this between frames).
+        app.compute_next_pending_count();
+        assert_eq!(app.filter_counts, vec![Count::Value(2)]); // "error" on lines 1 & 3
+        app.compute_next_pending_count();
+        assert_eq!(app.highlight_counts, vec![Count::Value(4)]); // "o" on all 4 lines (CI)
+        assert!(!app.has_pending_counts());
+
+        // Editing a term re-marks it pending; the run loop will refill it.
         app.filters[0].regex = true;
-        app.filter_counts[0] = app.compute_filter_count(&app.filters[0]);
-        assert_eq!(app.filter_counts, vec![Some(2)]);
+        app.filter_counts[0] = Count::Pending;
+        assert!(app.has_pending_counts());
     }
 
     #[test]
