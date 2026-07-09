@@ -106,9 +106,11 @@ fn main() -> ExitCode {
         }
     };
 
-    // When the log came from a pipe, fd 0 is that pipe — crossterm can't use it
-    // for keyboard input or raw mode. Redirect fd 0 to /dev/tty so all further
-    // stdin reads come from the terminal.
+    // When the log came from a pipe, fd 0 is that pipe. crossterm's `tty_fd()`
+    // handles this on Linux by opening /dev/tty itself (verified in a Debian
+    // container), so no redirect is needed there. On macOS, some setups fail at
+    // that step; we defensively redirect fd 0 to /dev/tty here so crossterm's
+    // isatty(0) branch takes over.
     if from_pipe {
         if let Err(e) = redirect_stdin_to_tty() {
             eprintln!("zercher: could not open /dev/tty for keyboard input: {e}");
@@ -189,12 +191,17 @@ fn spool_stdin() -> io::Result<(PathBuf, SourceGuard)> {
     Ok((path, SourceGuard::Spooled(tp)))
 }
 
-// Replace fd 0 with a fresh descriptor to /dev/tty so crossterm's stdin-based
-// raw mode + key reads work when the log itself came in through a pipe.
-#[cfg(unix)]
+// Replace fd 0 with a fresh descriptor to /dev/tty. Only needed on macOS: on
+// Linux, crossterm's `tty_fd()` already handles the "stdin is a pipe" case by
+// opening /dev/tty itself. We open READ+WRITE (not read-only) so crossterm's
+// tcsetattr for raw mode works — some platforms reject a read-only fd there.
+#[cfg(target_os = "macos")]
 fn redirect_stdin_to_tty() -> io::Result<()> {
     use std::os::fd::AsRawFd;
-    let tty = std::fs::OpenOptions::new().read(true).open("/dev/tty")?;
+    let tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")?;
     let ret = unsafe { libc::dup2(tty.as_raw_fd(), 0) };
     if ret < 0 {
         return Err(io::Error::last_os_error());
@@ -202,11 +209,10 @@ fn redirect_stdin_to_tty() -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+// On non-macOS: no-op. crossterm handles /dev/tty on its own for piped input.
+#[cfg(not(target_os = "macos"))]
 fn redirect_stdin_to_tty() -> io::Result<()> {
-    Err(io::Error::other(
-        "piped input requires /dev/tty, which is not available on this platform",
-    ))
+    Ok(())
 }
 
 fn fmt_bytes(n: u64) -> String {
