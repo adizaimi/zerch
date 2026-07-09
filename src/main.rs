@@ -191,17 +191,38 @@ fn spool_stdin() -> io::Result<(PathBuf, SourceGuard)> {
     Ok((path, SourceGuard::Spooled(tp)))
 }
 
-// Replace fd 0 with a fresh descriptor to /dev/tty. Only needed on macOS: on
-// Linux, crossterm's `tty_fd()` already handles the "stdin is a pipe" case by
-// opening /dev/tty itself. We open READ+WRITE (not read-only) so crossterm's
-// tcsetattr for raw mode works — some platforms reject a read-only fd there.
+// Replace fd 0 with a fresh descriptor to the controlling terminal, so
+// crossterm's stdin-based raw mode + event reader work when the log itself
+// came in through a pipe.
+//
+// Only needed on macOS: on Linux, crossterm's `tty_fd()` already handles the
+// pipe case by opening /dev/tty itself (verified in a Debian container).
+//
+// macOS-specific subtlety: an fd from `open("/dev/tty")` is an *indirect*
+// handle to the controlling terminal; on Darwin this fd is NOT pollable via
+// kqueue, and crossterm's mio-based event source silently fails
+// ("Failed to initialize input reader"). Opening the resolved tty path
+// (e.g. `/dev/ttys002`, obtained via `ttyname(stdout)`) yields a normal
+// character-device fd that kqueue accepts. Read+write is required — a
+// read-only fd is rejected by `tcsetattr` for raw mode on macOS.
 #[cfg(target_os = "macos")]
 fn redirect_stdin_to_tty() -> io::Result<()> {
+    use std::ffi::CStr;
     use std::os::fd::AsRawFd;
+
+    // stdout is guaranteed to be a TTY here (our earlier guard), so ttyname on
+    // fd 1 gives us the concrete /dev/ttys??? path.
+    let name = unsafe { libc::ttyname(libc::STDOUT_FILENO) };
+    let path: PathBuf = if name.is_null() {
+        PathBuf::from("/dev/tty") // last-resort fallback
+    } else {
+        let s = unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        PathBuf::from(s)
+    };
     let tty = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open("/dev/tty")?;
+        .open(&path)?;
     let ret = unsafe { libc::dup2(tty.as_raw_fd(), 0) };
     if ret < 0 {
         return Err(io::Error::last_os_error());
