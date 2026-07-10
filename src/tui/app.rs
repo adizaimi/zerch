@@ -821,7 +821,8 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Char(' ') => self.apply_time_brush(),
             KeyCode::Char('T') => self.toggle_hist(),
-            KeyCode::Esc => self.mode = Mode::Normal,
+            // q or Esc → leave the brush; the histogram row stays until T.
+            KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
             _ => {}
         }
     }
