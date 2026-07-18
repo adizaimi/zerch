@@ -377,6 +377,31 @@ impl App {
         self.pos = p;
     }
 
+    // After toggling wrap, reposition `pos` so the cursor stays centered and
+    // visible. This prevents the cursor line from suddenly appearing in a
+    // different screen position due to changed line heights.
+    fn adjust_pos_for_wrap_toggle(&mut self) {
+        if self.cursor == 0 {
+            self.pos = 0;
+            return;
+        }
+        let count = self.count();
+        if count == 0 {
+            return;
+        }
+        let vp = self.height.max(1);
+        let target_row = vp / 2; // target screen row for the cursor
+        let mut p = self.cursor;
+        let mut rows_below = 0usize;
+        // Walk backwards from cursor, summing screen rows, until we've
+        // seen enough rows to place cursor at target_row.
+        while rows_below < target_row && p > 0 {
+            p -= 1;
+            rows_below += self.wrap_rows_at(p);
+        }
+        self.pos = p;
+    }
+
     fn pan(&mut self, dir: i64) {
         if self.wrap {
             return;
@@ -1346,6 +1371,7 @@ impl App {
             KeyCode::Char('w') => {
                 self.wrap = !self.wrap;
                 self.hscroll = 0;
+                self.adjust_pos_for_wrap_toggle();
             }
             KeyCode::Char('/') => {
                 self.mode = Mode::Search;
