@@ -113,7 +113,7 @@ licenses). `Depends:` is derived automatically from the linked libraries.
 
 ```
 cargo install cargo-deb
-cargo deb            # → target/debian/zercher_0.1.0_<arch>.deb
+cargo deb            # → target/debian/zercher_0.3.0_<arch>.deb
 sudo apt install ./target/debian/zercher_*.deb
 ```
 
@@ -124,7 +124,7 @@ A debhelper source package lives in `debian/` (required at the repo root by
 
 ```
 sudo apt install devscripts debhelper cargo rustc
-dpkg-buildpackage -us -uc -b     # → ../zercher_0.1.0_<arch>.deb
+dpkg-buildpackage -us -uc -b     # → ../zercher_0.3.0_<arch>.deb
 ```
 
 `cargo` fetches the crate dependencies during the build, so the build host needs

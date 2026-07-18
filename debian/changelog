@@ -1,3 +1,15 @@
+zercher (0.3.0) unstable; urgency=medium
+
+  * Read logs from stdin ('zercher -' or a pipe, less-style), spooled to a
+    temp file and indexed as usual. The menu now shows a hit-count per filter
+    and highlight, computed lazily in the background so the first page still
+    appears instantly. Duplicate filter/highlight terms are rejected. Various
+    fixes: syntax coloring of unquoted values like a=1,b=2, 'q' now exits the
+    histogram brush, the cursor stays centered when toggling wrap, and piped
+    input works on macOS.
+
+ -- Adi Zaimi <adizaimi@yahoo.com>  Sat, 18 Jul 2026 12:00:00 +0000
+
 zercher (0.2.0) unstable; urgency=medium
 
   * Faster indexing (parallel newline scan, ~15x on large files), ~50% less
