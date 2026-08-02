@@ -167,7 +167,7 @@ fn is_present(present: &[u64], i: usize) -> bool {
 #[derive(Clone, Copy)]
 pub struct IndexOptions {
     /// Interpretation for offset-less timestamps. Defaults to `Utc` (deterministic);
-    /// the CLI may override (e.g. from `ZERCHER_NAIVE_TZ`) in a later phase.
+    /// the CLI may override (e.g. from `ZERCH_NAIVE_TZ`) in a later phase.
     pub naive_zone: NaiveZone,
     /// Year for year-less formats (BSD syslog). `None` → current UTC year.
     pub default_year: Option<i32>,
@@ -479,7 +479,7 @@ mod tests {
     fn write_temp(bytes: &[u8]) -> std::path::PathBuf {
         static N: AtomicU64 = AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(
-            "zercher_idx_{}_{}.log",
+            "zerch_idx_{}_{}.log",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ));

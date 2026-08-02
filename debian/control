@@ -1,4 +1,4 @@
-Source: zercher
+Source: zerch
 Section: utils
 Priority: optional
 Maintainer: Adi Zaimi <adizaimi@yahoo.com>
@@ -10,17 +10,18 @@ Build-Depends:
 Standards-Version: 4.7.0
 Rules-Requires-Root: no
 
-Package: zercher
+Package: zerch
 Architecture: any
 Depends:
  ${shlibs:Depends},
  ${misc:Depends}
 Description: less-but-smarter terminal log viewer
- zercher is a terminal log viewer with search, filters, highlights,
+ zerch is a terminal log viewer with search, filters, highlights,
  bookmarks, and log-level / timestamp awareness. It builds an in-memory
  index (memory-mapping the file and scanning it in parallel), so it opens
  multi-gigabyte files nearly instantly and searches them in well under a
  second.
  .
- The --view string is byte-compatible with the zercher web application's
- shareable URL, so a saved view moves between the web UI and the CLI.
+ The --view string captures the full view (filters, highlights, bookmarks,
+ revealed ranges, search, selected line) as one compact, shareable token, so
+ an exact view can be saved or handed off as a single string.

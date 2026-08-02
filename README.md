@@ -1,33 +1,33 @@
-# zercher
+# zerch
 
 A `less`-but-smarter terminal log viewer — search, filters, highlights, bookmarks,
 log-level / timestamp awareness, and a time histogram — as a single small native
 binary (~1.8 MB, links only the system C library).
 
-This is a Rust rewrite of the terminal viewer that previously lived inside the
-Node/TypeScript `zercher` project (which needed a ~265 MB Node + `node_modules`
-install). Design goals:
+This is a Rust rewrite of a terminal log viewer that previously lived inside a
+Node/TypeScript project (which needed a ~265 MB Node + `node_modules` install).
+Design goals:
 
 - **Small footprint** — one lean binary, few dependencies, easy to package for Debian.
 - **Adaptable to scale** — an in-memory index (`mmap` + parallel scan) opens multi-GB
   files near-instantly (a 1.36 GB / ~900k-line file indexes in ~1 s) and searches
   them in well under a second, with bounded memory.
-- **Interoperable** — the `--view` string is byte-compatible with the zercher web
-  app's shareable URL, so a saved view moves between the web UI and the CLI.
+- **Portable views** — the `--view` string captures the full view (filters, highlights,
+  bookmarks, revealed ranges, search, selected line) as one compact, shareable token.
 
 ## Usage
 
 ```
-zercher <logfile> [--view <string>]
-zercher -                     # read log from stdin (explicit)
-<cmd> | zercher               # read log from stdin (implicit; less-style)
+zerch <logfile> [--view <string>]
+zerch -                     # read log from stdin (explicit)
+<cmd> | zerch               # read log from stdin (implicit; less-style)
 ```
 
 `--view` restores filters, highlights, bookmarks, revealed ranges, the search, and
-the selected line — e.g. a string copied from the web app's address bar.
+the selected line, so you can save or hand off an exact view as a single string.
 
-When reading from stdin (a pipe or `-`), zercher spools it to a temp file first,
-then indexes it as usual — so `kubectl logs foo | zercher`, `zcat huge.gz | zercher`,
+When reading from stdin (a pipe or `-`), zerch spools it to a temp file first,
+then indexes it as usual — so `kubectl logs foo | zerch`, `zcat huge.gz | zerch`,
 etc. work out of the box. The temp file is deleted on exit.
 
 ## Keys
@@ -57,7 +57,7 @@ binary links only the platform C runtime (`libc`).
 cargo build --release
 ```
 
-The optimized binary lands at `target/release/zercher`. **Always use the release
+The optimized binary lands at `target/release/zerch`. **Always use the release
 build for large files** — the plain `cargo build` (dev profile) is unoptimized and
 its regex is far slower at runtime.
 
@@ -80,26 +80,26 @@ its regex is far slower at runtime.
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    source "$HOME/.cargo/env"
    cargo build --release
-   ./target/release/zercher /path/to/logfile
+   ./target/release/zerch /path/to/logfile
    ```
 
 That's it — there are no `-dev` package dependencies to install (SQLite is not used;
 the TUI, search, and regex are all pure Rust). The result is a self-contained binary
-depending only on `libc`/`libgcc`; verify with `ldd target/release/zercher`.
+depending only on `libc`/`libgcc`; verify with `ldd target/release/zerch`.
 
 ### Install on your PATH
 
 ```
-cargo install --path .        # installs `zercher` into ~/.cargo/bin
+cargo install --path .        # installs `zerch` into ~/.cargo/bin
 ```
 
 ### Build profiles
 
 | Command | Output | Use for |
 |---|---|---|
-| `cargo build --release` | `target/release/zercher` | normal use — fast, small, stripped |
-| `cargo build --profile release-debug` | `target/release-debug/zercher` | debugging — release speed **+ symbols** for `gdb`/`lldb` |
-| `cargo build` | `target/debug/zercher` | quick compiles only — slow at runtime |
+| `cargo build --release` | `target/release/zerch` | normal use — fast, small, stripped |
+| `cargo build --profile release-debug` | `target/release-debug/zerch` | debugging — release speed **+ symbols** for `gdb`/`lldb` |
+| `cargo build` | `target/debug/zerch` | quick compiles only — slow at runtime |
 
 ## Packaging (Debian / Ubuntu)
 
@@ -113,8 +113,8 @@ licenses). `Depends:` is derived automatically from the linked libraries.
 
 ```
 cargo install cargo-deb
-cargo deb            # → target/debian/zercher_0.3.0_<arch>.deb
-sudo apt install ./target/debian/zercher_*.deb
+cargo deb            # → target/debian/zerch_0.3.0_<arch>.deb
+sudo apt install ./target/debian/zerch_*.deb
 ```
 
 ### Native source package: `debian/`
@@ -124,7 +124,7 @@ A debhelper source package lives in `debian/` (required at the repo root by
 
 ```
 sudo apt install devscripts debhelper cargo rustc
-dpkg-buildpackage -us -uc -b     # → ../zercher_0.3.0_<arch>.deb
+dpkg-buildpackage -us -uc -b     # → ../zerch_0.3.0_<arch>.deb
 ```
 
 `cargo` fetches the crate dependencies during the build, so the build host needs
@@ -132,17 +132,17 @@ network access — or vendor them first with `cargo vendor` and a `.cargo/config
 pointing at the vendor dir. Also ensure the toolchain satisfies the crate's
 `rust-version`; if your distro's `rustc` is too old, put a rustup toolchain on `PATH`.
 
-Both paths install the binary to `/usr/bin/zercher` and the man page to
-`/usr/share/man/man1/zercher.1`.
+Both paths install the binary to `/usr/bin/zerch` and the man page to
+`/usr/share/man/man1/zerch.1`.
 
 ### Build & test the `.deb` in Docker
 
 `packaging/deb.Dockerfile` builds the package in a clean Debian image and smoke-tests
-it (installs into `debian:bookworm-slim`, runs `zercher --help`, checks the man page is
+it (installs into `debian:bookworm-slim`, runs `zerch --help`, checks the man page is
 packaged) — handy from a non-Linux host:
 
 ```
-docker build -f packaging/deb.Dockerfile --target test -t zercher-deb .
+docker build -f packaging/deb.Dockerfile --target test -t zerch-deb .
 # copy the built .deb out:
 docker build -f packaging/deb.Dockerfile --target export -o type=local,dest=./dist .
 ```

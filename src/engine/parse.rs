@@ -85,7 +85,7 @@ static UPPER_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(r"\b({upper})\b")).unwrap()
 });
 
-/// Parse a `ZERCHER_NAIVE_TZ`-style value into a [`NaiveZone`], or `None` if
+/// Parse a `ZERCH_NAIVE_TZ`-style value into a [`NaiveZone`], or `None` if
 /// unset/invalid. Accepts "utc"/"z", "local", or an offset like "+02:00"/"-0700".
 pub fn resolve_naive_zone(value: Option<&str>) -> Option<NaiveZone> {
     let v = value?.trim().to_lowercase();

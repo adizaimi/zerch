@@ -1024,7 +1024,7 @@ impl App {
             vec![s]
         };
         self.overlay = Overlay::Text {
-            title: "Shareable view — restore with: zercher <file> --view \"…\"".to_string(),
+            title: "Shareable view — restore with: zerch <file> --view \"…\"".to_string(),
             body,
         };
         self.overlay_scroll = 0;
@@ -1939,7 +1939,7 @@ mod tests {
     fn app_from(lines: &[&str]) -> App {
         static C: AtomicU64 = AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(
-            "zercher_app_{}_{}.log",
+            "zerch_app_{}_{}.log",
             std::process::id(),
             C.fetch_add(1, Ordering::Relaxed)
         ));

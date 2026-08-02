@@ -205,7 +205,7 @@ mod tests {
     fn open_lines(lines: &[&str]) -> LineIndex {
         static N: AtomicU64 = AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(
-            "zercher_search_{}_{}.log",
+            "zerch_search_{}_{}.log",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ));

@@ -1,6 +1,14 @@
-zercher (0.3.0) unstable; urgency=medium
+zerch (0.4.0) unstable; urgency=medium
 
-  * Read logs from stdin ('zercher -' or a pipe, less-style), spooled to a
+  * Renamed the project from "zercher" to "zerch" — shorter to type and a
+    clearer nod to "search". The binary, crate, man page, and package are all
+    now "zerch"; no functional changes.
+
+ -- Adi Zaimi <adizaimi@yahoo.com>  Tue, 21 Jul 2026 12:00:00 +0000
+
+zerch (0.3.0) unstable; urgency=medium
+
+  * Read logs from stdin ('zerch -' or a pipe, less-style), spooled to a
     temp file and indexed as usual. The menu now shows a hit-count per filter
     and highlight, computed lazily in the background so the first page still
     appears instantly. Duplicate filter/highlight terms are rejected. Various
@@ -10,7 +18,7 @@ zercher (0.3.0) unstable; urgency=medium
 
  -- Adi Zaimi <adizaimi@yahoo.com>  Sat, 18 Jul 2026 12:00:00 +0000
 
-zercher (0.2.0) unstable; urgency=medium
+zerch (0.2.0) unstable; urgency=medium
 
   * Faster indexing (parallel newline scan, ~15x on large files), ~50% less
     per-line metadata memory, editable input line with shared history and
@@ -20,9 +28,9 @@ zercher (0.2.0) unstable; urgency=medium
 
  -- Adi Zaimi <adizaimi@yahoo.com>  Mon, 07 Jul 2026 12:00:00 +0000
 
-zercher (0.1.0) unstable; urgency=medium
+zerch (0.1.0) unstable; urgency=medium
 
   * Initial release: terminal log viewer with search, filters, highlights,
-    bookmarks, time histogram, and a web-compatible --view string.
+    bookmarks, time histogram, and a shareable --view string.
 
  -- Adi Zaimi <adizaimi@yahoo.com>  Thu, 03 Jul 2026 12:00:00 +0000

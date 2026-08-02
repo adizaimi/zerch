@@ -1,4 +1,4 @@
-//! zercher — a smarter terminal log viewer.
+//! zerch — a smarter terminal log viewer.
 //!
 //! The crate is split into an `engine` (indexing + search over a log file) and,
 //! in later phases, a pure `view` model and a `tui` layer. Pure logic lives in

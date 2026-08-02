@@ -87,7 +87,7 @@ pub fn level_name(code: Level) -> &'static str {
     LEVEL_NAMES.get(code as usize).copied().unwrap_or("")
 }
 
-/// Hex colour for the gutter tint (`None` for code 0). Values match the web app.
+/// Hex colour for the gutter tint (`None` for code 0).
 pub fn level_color(code: Level) -> Option<&'static str> {
     Some(match code {
         1 => "#9e9e9e", // TRACE

@@ -1,13 +1,13 @@
-.TH ZERCHER 1 "2026-07-07" "zercher 0.2.0" "User Commands"
+.TH ZERCH 1 "2026-07-07" "zerch 0.2.0" "User Commands"
 .SH NAME
-zercher \- a less-but-smarter terminal log viewer
+zerch \- a less-but-smarter terminal log viewer
 .SH SYNOPSIS
-.B zercher
+.B zerch
 .I logfile
 .RB [ \-\-view
 .IR string ]
 .SH DESCRIPTION
-.B zercher
+.B zerch
 is a terminal log viewer with search, filters, highlights, bookmarks, and
 log\-level / timestamp awareness. It builds an in\-memory index (memory\-mapping
 the file and scanning it in parallel), so it opens multi\-gigabyte files nearly
@@ -16,9 +16,8 @@ instantly and searches them in well under a second.
 .TP
 .BI \-\-view " string"
 Restore a saved view: filters, highlights, bookmarks, revealed ranges, the
-search term, and the selected line. The format is byte\-compatible with the
-zercher web application's shareable URL, so a string copied from the web
-address bar can be passed here.
+search term, and the selected line, encoded as a single compact, shareable
+token \(em so you can save or hand off an exact view.
 .TP
 .BR \-h ", " \-\-help
 Print a short usage summary and exit.
@@ -75,7 +74,7 @@ twice, or
 to exit immediately).
 .SH ENVIRONMENT
 .TP
-.B ZERCHER_NAIVE_TZ
+.B ZERCH_NAIVE_TZ
 Interpretation for offset\-less timestamps:
 .BR utc ", " local ", or a fixed offset like " +02:00 .
 .SH AUTHOR

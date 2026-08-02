@@ -1,30 +1,29 @@
-//! zercher — a smarter terminal log viewer (binary entry point).
+//! zerch — a smarter terminal log viewer (binary entry point).
 //!
 //! Parses args, spools stdin to a temp file when the source is a pipe, guards
 //! against a non-TTY *output*, indexes the file, and hands off to the TUI.
-//! `--view <string>` restores a saved view (byte-compatible with the web app's
-//! shareable URL).
+//! `--view <string>` restores a saved view from a compact, shareable token.
 
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use zercher::engine::index::{IndexOptions, LineIndex};
-use zercher::tui;
-use zercher::view::state::parse_view;
+use zerch::engine::index::{IndexOptions, LineIndex};
+use zerch::tui;
+use zerch::view::state::parse_view;
 
 const USAGE: &str = "\
-zercher — a less-but-smarter terminal log viewer
+zerch — a less-but-smarter terminal log viewer
 
 USAGE:
-    zercher <logfile> [--view <string>]
-    zercher -                        # read log from stdin (explicit)
-    <cmd> | zercher                  # read log from stdin (implicit)
+    zerch <logfile> [--view <string>]
+    zerch -                        # read log from stdin (explicit)
+    <cmd> | zerch                  # read log from stdin (implicit)
 
 OPTIONS:
     --view <string>    Restore a saved view (filters, highlights, bookmarks,
-                       revealed ranges, search, selected line). Byte-compatible
-                       with the zercher web app's shareable URL.
+                       revealed ranges, search, selected line) from a compact,
+                       shareable token.
     -h, --help         Print this help and exit
 
 Press ? inside the viewer for the interactive keybinding cheat-sheet.
@@ -63,7 +62,7 @@ fn main() -> ExitCode {
     // Output must be a TTY (we draw a UI). Input from stdin is fine — that's
     // the whole point of piping; crossterm reads keyboard from /dev/tty on Unix.
     if !io::stdout().is_terminal() {
-        eprintln!("zercher: stdout is not a TTY — run in an interactive terminal");
+        eprintln!("zerch: stdout is not a TTY — run in an interactive terminal");
         return ExitCode::FAILURE;
     }
 
@@ -76,21 +75,21 @@ fn main() -> ExitCode {
                 (p, "(stdin)".to_string(), g)
             }
             Err(e) => {
-                eprintln!("zercher: could not spool stdin: {e}");
+                eprintln!("zerch: could not spool stdin: {e}");
                 return ExitCode::FAILURE;
             }
         },
         Some(f) => {
             let p = PathBuf::from(f);
             if !p.is_file() {
-                eprintln!("zercher: no such file: {f}");
+                eprintln!("zerch: no such file: {f}");
                 return ExitCode::FAILURE;
             }
             (p, f.to_string(), SourceGuard::File)
         }
         None => {
             if io::stdin().is_terminal() {
-                eprintln!("zercher: no log file given\n\n{USAGE}");
+                eprintln!("zerch: no log file given\n\n{USAGE}");
                 return ExitCode::FAILURE;
             }
             match spool_stdin() {
@@ -99,7 +98,7 @@ fn main() -> ExitCode {
                     (p, "(stdin)".to_string(), g)
                 }
                 Err(e) => {
-                    eprintln!("zercher: could not spool stdin: {e}");
+                    eprintln!("zerch: could not spool stdin: {e}");
                     return ExitCode::FAILURE;
                 }
             }
@@ -113,7 +112,7 @@ fn main() -> ExitCode {
     // isatty(0) branch takes over.
     if from_pipe {
         if let Err(e) = redirect_stdin_to_tty() {
-            eprintln!("zercher: could not open /dev/tty for keyboard input: {e}");
+            eprintln!("zerch: could not open /dev/tty for keyboard input: {e}");
             return ExitCode::FAILURE;
         }
     }
@@ -126,7 +125,7 @@ fn main() -> ExitCode {
     let file_len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     let _ = rayon::ThreadPoolBuilder::new()
-        .num_threads(zercher::plan_threads(file_len, cores))
+        .num_threads(zerch::plan_threads(file_len, cores))
         .build_global();
 
     // Transient status on the normal screen (no newline), erased once indexing is
@@ -136,7 +135,7 @@ fn main() -> ExitCode {
     let index = match LineIndex::open(&path, IndexOptions::default(), |_pct| {}) {
         Ok(idx) => idx,
         Err(e) => {
-            eprintln!("\r\x1b[2Kzercher: could not read {display_name}: {e}");
+            eprintln!("\r\x1b[2Kzerch: could not read {display_name}: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -146,7 +145,7 @@ fn main() -> ExitCode {
     let code = match tui::run(index, display_name, initial_view) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("zercher: {e}");
+            eprintln!("zerch: {e}");
             ExitCode::FAILURE
         }
     };
@@ -159,7 +158,7 @@ fn main() -> ExitCode {
 // guard that unlinks it when the process ends.
 fn spool_stdin() -> io::Result<(PathBuf, SourceGuard)> {
     let named = tempfile::Builder::new()
-        .prefix("zercher-stdin-")
+        .prefix("zerch-stdin-")
         .suffix(".log")
         .tempfile()?;
     let mut writer = io::BufWriter::new(named.as_file());

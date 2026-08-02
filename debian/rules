@@ -13,7 +13,7 @@ override_dh_auto_test:
 	cargo test --release --locked
 
 override_dh_auto_install:
-	install -D -m0755 target/release/zercher debian/zercher/usr/bin/zercher
+	install -D -m0755 target/release/zerch debian/zerch/usr/bin/zerch
 
 override_dh_auto_clean:
 	cargo clean

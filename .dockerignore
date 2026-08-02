@@ -2,7 +2,7 @@
 target/
 .git/
 debian/.debhelper/
-debian/zercher/
+debian/zerch/
 debian/files
 debian/*.substvars
 debian/*.debhelper

@@ -1,10 +1,9 @@
 //! Serialise / parse the view (filters, highlights, bookmarks, revealed ranges,
-//! search, selected line) to a query-string **interoperable with the web app's
-//! shareable URL** (`src/tui/viewState.ts`): identical param names, comma-separated
+//! search, selected line) to a compact **query-string token**: comma-separated
 //! flag lists, `application/x-www-form-urlencoded` encoding, `bookmarks` as a plain
-//! list, `visible` as runs. A string copied from the web address bar works as
-//! `--view`, and vice-versa. `henabled` (per-highlight enable) and `scase` (search
-//! case) are extras the web ignores; they default sensibly when absent.
+//! list, `visible` as runs. The token round-trips exactly through `--view`, so an
+//! exact view can be saved or handed off as a single string. `henabled` (per-highlight
+//! enable) and `scase` (search case) default sensibly when absent.
 
 use crate::view::HIGHLIGHT_PALETTE;
 use regex::Regex;
@@ -55,7 +54,7 @@ pub struct ViewState {
     pub search: String,
     pub search_regex: bool,
     pub search_case: bool,
-    pub selected: Option<usize>, // cursor/anchored line (web's `selected`)
+    pub selected: Option<usize>, // cursor/anchored line (the `selected` param)
 }
 
 static RANGE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+)(?:-(\d+))?$").unwrap());
@@ -65,7 +64,7 @@ fn bits(flags: impl Iterator<Item = bool>) -> String {
     flags.map(|b| if b { "1" } else { "0" }).collect::<Vec<_>>().join(",")
 }
 
-/// Coalesce line numbers into "a-b,c" runs (matches the web's `visible`).
+/// Coalesce line numbers into "a-b,c" runs (the `visible` param encoding).
 pub fn encode_runs(lines: &[usize]) -> String {
     let mut s: Vec<usize> = lines.to_vec();
     s.sort_unstable();
@@ -279,9 +278,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_web_address_bar_string() {
-        let web = "filters=error&enabled=1&fcase=0&frx=0&fneg=0&mode=AND&highlights=error,producing,record,at&hcase=0,0,0,0&hrx=0,0,0,0&bookmarks=4,7&search=%7B";
-        let v = parse_view(web);
+    fn parses_full_query_string_token() {
+        let token = "filters=error&enabled=1&fcase=0&frx=0&fneg=0&mode=AND&highlights=error,producing,record,at&hcase=0,0,0,0&hrx=0,0,0,0&bookmarks=4,7&search=%7B";
+        let v = parse_view(token);
         assert_eq!(
             v.filters,
             vec![FilterEntry { term: "error".into(), enabled: true, case_sensitive: false, regex: false, negate: false }]

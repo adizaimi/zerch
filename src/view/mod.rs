@@ -1,6 +1,6 @@
 //! Pure, testable view model shared by the TUI: the serialisable [`state::ViewState`]
-//! (byte-compatible with the web app's shareable URL), the displayed-sequence merge,
-//! text highlighting, and the grep/awk export.
+//! (a compact query-string token, round-tripped through `--view`), the
+//! displayed-sequence merge, text highlighting, and the grep/awk export.
 
 pub mod displayed;
 pub mod highlight;
