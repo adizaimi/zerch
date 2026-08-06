@@ -3,6 +3,7 @@
 //! way out (including on panic, via a drop guard).
 
 pub mod app;
+mod history;
 
 use crate::engine::index::LineIndex;
 use crate::view::state::ViewState;
@@ -35,6 +36,8 @@ pub fn run(index: LineIndex, file_name: String, initial_view: Option<ViewState>)
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::new(index, file_name);
+    // Seed the shared recent-input history from the persisted file (best-effort).
+    app.set_history(history::load());
     if let Some(v) = initial_view {
         app.apply_view(v);
     }
@@ -69,6 +72,8 @@ pub fn run(index: LineIndex, file_name: String, initial_view: Option<ViewState>)
             }
         }
     }
+    // Persist the shared recent-input history for next time (best-effort).
+    history::save(&app.history_snapshot());
     Ok(())
 }
 

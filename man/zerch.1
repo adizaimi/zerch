@@ -77,6 +77,22 @@ to exit immediately).
 .B ZERCH_NAIVE_TZ
 Interpretation for offset\-less timestamps:
 .BR utc ", " local ", or a fixed offset like " +02:00 .
+.TP
+.B ZERCH_HISTFILE
+Path to the persistent input\-history file (the last 100 search / filter /
+highlight terms, recalled with the up and down arrows). Defaults to
+.I $XDG_STATE_HOME/zerch/history
+(or
+.IR ~/.local/state/zerch/history ).
+Set to
+.B \-
+or empty to disable history persistence. The file is written owner\-readable
+only (0600).
+.SH FILES
+.TP
+.I ~/.local/state/zerch/history
+Persistent input history (unless overridden by
+.BR ZERCH_HISTFILE ).
 .SH AUTHOR
 Adi Zaimi.
 .SH LICENSE

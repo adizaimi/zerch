@@ -4,8 +4,9 @@ A `less`-but-smarter terminal log viewer — search, filters, highlights, bookma
 log-level / timestamp awareness, and a time histogram — as a single small native
 binary (~1.8 MB, links only the system C library).
 
-This is a Rust rewrite of a terminal log viewer that previously lived inside a
-Node/TypeScript project (which needed a ~265 MB Node + `node_modules` install).
+This is Command Line Tool written in Rust with the goal of being fast and responsive,
+as well as safe and small executable.
+
 Design goals:
 
 - **Small footprint** — one lean binary, few dependencies, easy to package for Debian.
@@ -29,6 +30,19 @@ the selected line, so you can save or hand off an exact view as a single string.
 When reading from stdin (a pipe or `-`), zerch spools it to a temp file first,
 then indexes it as usual — so `kubectl logs foo | zerch`, `zcat huge.gz | zerch`,
 etc. work out of the box. The temp file is deleted on exit.
+
+### History
+
+The last 100 terms you enter at the `/` search, `F` filter, and `h` highlight
+prompts are remembered across sessions (recall them with `↑`/`↓`), like `less`.
+They're stored — newest first, owner-readable only — at:
+
+```
+$XDG_STATE_HOME/zerch/history      # or ~/.local/state/zerch/history
+```
+
+Set `ZERCH_HISTFILE` to use a different path, or to `-` (or empty) to disable
+persistence entirely. All history I/O is best-effort and never blocks the viewer.
 
 ## Keys
 

@@ -3,6 +3,7 @@
 //! layer on in the following commits/phases.
 
 use crate::engine::index::{Histogram, LineIndex};
+use crate::tui::history::HISTORY_MAX;
 use crate::engine::search::{search, Op, Scope, SearchTerm};
 use crate::levels::{hex_rgb, level_rgb};
 use crate::view::displayed::{build_displayed_items, DisplayedItem};
@@ -24,7 +25,6 @@ use ratatui::Frame;
 const HINT: &str =
     "j/k f/b · /search n/N · F filter h hl B mark · T hist m menu · w wrap ? help q quit";
 const CURSOR_BG: Color = Color::Indexed(236);
-const SEARCH_HISTORY_MAX: usize = 50;
 const EXPAND_CHUNK: usize = 5;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -233,6 +233,18 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Seed the shared recent-input history (search / filter / highlight) from
+    /// persisted storage. Expects newest-first order; capped at [`HISTORY_MAX`].
+    pub fn set_history(&mut self, mut h: Vec<String>) {
+        h.truncate(HISTORY_MAX);
+        self.history = h;
+    }
+
+    /// A copy of the current recent-input history (newest first) for persisting.
+    pub fn history_snapshot(&self) -> Vec<String> {
+        self.history.clone()
     }
 
     fn count(&self) -> usize {
@@ -1925,7 +1937,7 @@ fn push_history(history: &mut Vec<String>, term: &str) {
     }
     history.retain(|t| t != term);
     history.insert(0, term.to_string());
-    history.truncate(SEARCH_HISTORY_MAX);
+    history.truncate(HISTORY_MAX);
 }
 
 #[cfg(test)]
