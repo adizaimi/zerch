@@ -1,3 +1,11 @@
+zerch (0.4.1) unstable; urgency=medium
+
+  * Remember the last 100 search / filter / highlight terms across sessions
+    (recall with the up/down arrows), like less. Stored owner-readable only at
+    $XDG_STATE_HOME/zerch/history (override with $ZERCH_HISTFILE; "-" disables).
+
+ -- Adi Zaimi <adizaimi@yahoo.com>  Sun, 03 Aug 2026 12:00:00 +0000
+
 zerch (0.4.0) unstable; urgency=medium
 
   * Renamed the project from "zercher" to "zerch" — shorter to type and a
