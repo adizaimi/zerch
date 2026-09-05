@@ -23,7 +23,7 @@ use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 const HINT: &str =
-    "j/k f/b · /search n/N · F filter h hl B mark · T hist m menu · w wrap ? help q quit";
+    "j/k f/b H/M/L · /search n/N :N goto · F filter h hl B mark · T hist m menu · w wrap ? help q quit";
 const CURSOR_BG: Color = Color::Indexed(236);
 const EXPAND_CHUNK: usize = 5;
 
@@ -34,6 +34,16 @@ pub enum Mode {
     Highlight,
     Filter,
     Hist,
+    /// `:` command line (currently `:N` / `:$` to jump to a line).
+    Command,
+}
+
+/// Where H/M/L place the cursor within the visible screen.
+#[derive(Clone, Copy)]
+enum ScreenPos {
+    Top,
+    Middle,
+    Bottom,
 }
 
 const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
@@ -356,6 +366,77 @@ impl App {
         };
     }
 
+    // Index of the last displayed item that is (at least partly) on screen,
+    // given the current top (`pos`) and viewport height. Wrap-aware: in wrap
+    // mode a single item can span several rows, so fewer items are visible.
+    fn last_visible_pos(&self) -> usize {
+        let count = self.count();
+        if count == 0 {
+            return 0;
+        }
+        let vp = self.height.max(1);
+        if !self.wrap {
+            return (self.pos + vp - 1).min(count - 1);
+        }
+        let mut rows = 0usize;
+        let mut p = self.pos;
+        while p < count {
+            rows += self.wrap_rows_at(p);
+            if rows >= vp {
+                break;
+            }
+            p += 1;
+        }
+        p.min(count - 1)
+    }
+
+    // vim H/M/L: move the cursor within the visible screen without scrolling.
+    fn cursor_to_screen(&mut self, where_: ScreenPos) {
+        if self.count() == 0 {
+            return;
+        }
+        let top = self.pos;
+        let bottom = self.last_visible_pos();
+        self.cursor = match where_ {
+            ScreenPos::Top => top,
+            ScreenPos::Middle => (top + bottom) / 2,
+            ScreenPos::Bottom => bottom,
+        };
+    }
+
+    // `:N` / `:$` — jump to a 1-based document line, revealing it if a filter
+    // has hidden it (mirrors --view's `selected` restore).
+    fn goto_line(&mut self, line: usize) {
+        if self.total == 0 {
+            return;
+        }
+        let n = line.clamp(1, self.total);
+        if let Some(p) = self.pos_of_line(n) {
+            self.jump_to(p as i64);
+            return;
+        }
+        self.visible_lines.insert(n);
+        self.recompute();
+        if let Some(p) = self.pos_of_line(n) {
+            self.jump_to(p as i64);
+        }
+    }
+
+    fn run_command(&mut self, cmd: &str) {
+        self.mode = Mode::Normal;
+        let c = cmd.trim();
+        if c.is_empty() {
+            return;
+        }
+        if c == "$" {
+            self.goto_line(self.total);
+        } else if let Ok(n) = c.parse::<usize>() {
+            self.goto_line(n);
+        } else {
+            self.hint = Some("unknown command (try :N or :$)");
+        }
+    }
+
     // Screen rows a displayed item occupies in wrap mode.
     fn wrap_rows_at(&self, p: usize) -> usize {
         match self.item_at(p) {
@@ -469,14 +550,21 @@ impl App {
         }
     }
 
-    fn goto_match(&mut self, idx: i64) {
+    // n / N: jump to the next/previous match relative to the *cursor* (vim
+    // style), so match navigation tracks wherever you've moved to. `miv` is
+    // sorted ascending. Wraps around the ends.
+    fn goto_match_relative(&mut self, forward: bool) {
         if self.miv.is_empty() {
             return;
         }
-        let len = self.miv.len() as i64;
-        let wrapped = ((idx % len) + len) % len;
-        self.match_idx = wrapped as usize;
-        let line = self.miv[wrapped as usize];
+        let cur = self.current_line().unwrap_or(0);
+        let idx = if forward {
+            self.miv.iter().position(|&l| l > cur).unwrap_or(0)
+        } else {
+            self.miv.iter().rposition(|&l| l < cur).unwrap_or(self.miv.len() - 1)
+        };
+        self.match_idx = idx;
+        let line = self.miv[idx];
         if let Some(p) = self.pos_of_line(line) {
             self.jump_to(p as i64);
         }
@@ -1278,6 +1366,7 @@ impl App {
                         self.add_filter(&term);
                         self.mode = Mode::Normal;
                     }
+                    Mode::Command => self.run_command(&term),
                     Mode::Normal | Mode::Hist => {}
                 }
                 self.reset_input();
@@ -1307,8 +1396,9 @@ impl App {
             KeyCode::Right => self.input_cursor = (self.input_cursor + 1).min(len),
             KeyCode::Home => self.input_cursor = 0,
             KeyCode::End => self.input_cursor = len,
-            KeyCode::Up => self.history_recall(1),
-            KeyCode::Down => self.history_recall(-1),
+            // History recall is for the term prompts; the `:` command line has none.
+            KeyCode::Up if self.mode != Mode::Command => self.history_recall(1),
+            KeyCode::Down if self.mode != Mode::Command => self.history_recall(-1),
             KeyCode::Char(c) => {
                 let b = self.input_byte(self.input_cursor);
                 self.input.insert(b, c);
@@ -1377,6 +1467,13 @@ impl App {
                 self.pos = 0;
             }
             KeyCode::Char('G') => self.jump_to(count - 1),
+            KeyCode::Char('H') => self.cursor_to_screen(ScreenPos::Top),
+            KeyCode::Char('M') => self.cursor_to_screen(ScreenPos::Middle),
+            KeyCode::Char('L') => self.cursor_to_screen(ScreenPos::Bottom),
+            KeyCode::Char(':') => {
+                self.mode = Mode::Command;
+                self.reset_input();
+            }
             KeyCode::Left => self.pan(-1),
             KeyCode::Right => self.pan(1),
             KeyCode::Char('0') => self.hscroll = 0,
@@ -1397,8 +1494,8 @@ impl App {
                 self.mode = Mode::Filter;
                 self.reset_input();
             }
-            KeyCode::Char('n') => self.goto_match(self.match_idx as i64 + 1),
-            KeyCode::Char('N') => self.goto_match(self.match_idx as i64 - 1),
+            KeyCode::Char('n') => self.goto_match_relative(true),
+            KeyCode::Char('N') => self.goto_match_relative(false),
             KeyCode::Char('B') => self.toggle_bookmark(),
             KeyCode::Char('[') => self.goto_bookmark(false),
             KeyCode::Char(']') => self.goto_bookmark(true),
@@ -1754,6 +1851,11 @@ impl App {
                 ));
                 Line::from(spans)
             }
+            Mode::Command => {
+                let mut spans = self.input_spans(":");
+                spans.push(Span::styled("  line number · $ = last · Enter go", dim));
+                Line::from(spans)
+            }
             Mode::Hist => Line::from(Span::styled(
                 "time brush: ←/→ move · a anchor · Enter apply · c clear · T/Esc close",
                 Style::default().fg(Color::DarkGray),
@@ -1841,8 +1943,9 @@ fn name_color(name: &str) -> Color {
 fn help_lines() -> Vec<Line<'static>> {
     const ROWS: &[&str] = &[
         "Movement   j/k or ↑/↓ move · f/b (or space/PgDn, ^F/^B) page · g/G top/bottom",
+        "           H/M/L cursor to screen top/middle/bottom · :N go to line N · :$ last",
         "Long lines ←/→ pan · 0 reset pan · w toggle in-place wrap",
-        "Search     / search · n/N next/prev · ^R regex · ^A case · ↑/↓ history · Esc clear",
+        "Search     / search · n/N next/prev (from cursor) · ^R regex · ^A case · ↑/↓ history · Esc clear",
         "Highlight  h add a coloured highlight term",
         "Filter     F add filter · o toggle AND/OR",
         "Bookmarks  B toggle on cursor line · [ / ] previous/next bookmark",
@@ -2028,10 +2131,54 @@ mod tests {
         app.run_search("ERROR");
         assert_eq!(app.matches, vec![2, 4]);
         assert_eq!(app.cursor, 1); // jumped to first match (line 2 → pos 1)
-        app.goto_match(app.match_idx as i64 + 1);
+        app.goto_match_relative(true); // n: next match after cursor
         assert_eq!(app.cursor, 3); // line 4
-        app.goto_match(app.match_idx as i64 + 1);
-        assert_eq!(app.cursor, 1); // wrapped back to line 2
+        app.goto_match_relative(true); // n: past the end → wraps to first
+        assert_eq!(app.cursor, 1); // line 2
+        app.goto_match_relative(false); // N: before first → wraps to last
+        assert_eq!(app.cursor, 3); // line 4
+    }
+
+    #[test]
+    fn screen_relative_cursor_moves() {
+        let mut app = app_n(100);
+        app.height = 10; // items 10..=19 visible after paging
+        app.page_by(1);
+        assert_eq!(app.pos, 10);
+        app.cursor_to_screen(ScreenPos::Top);
+        assert_eq!(app.cursor, 10); // top of screen
+        app.cursor_to_screen(ScreenPos::Bottom);
+        assert_eq!(app.cursor, 19); // bottom of the 10-row screen
+        app.cursor_to_screen(ScreenPos::Middle);
+        assert_eq!(app.cursor, 14); // (10+19)/2
+        assert_eq!(app.pos, 10); // H/M/L never scroll
+    }
+
+    #[test]
+    fn command_goto_line() {
+        let mut app = app_n(100);
+        app.height = 10;
+        app.run_command("42");
+        assert_eq!(app.current_line(), Some(42)); // 1-based document line
+        app.run_command("$");
+        assert_eq!(app.current_line(), Some(100)); // last line
+        app.run_command("1");
+        assert_eq!(app.current_line(), Some(1));
+        // Out-of-range clamps; junk is rejected with a hint (no move).
+        app.run_command("99999");
+        assert_eq!(app.current_line(), Some(100));
+        app.run_command("nope");
+        assert_eq!(app.current_line(), Some(100));
+        assert!(app.hint.is_some());
+    }
+
+    #[test]
+    fn command_goto_reveals_filtered_line() {
+        let mut app = app_from(&["aa", "bb", "cc aa", "dd", "ee aa"]);
+        app.add_filter("aa"); // view now shows only lines 1,3,5 (+gaps)
+        assert!(app.pos_of_line(4).is_none()); // line 4 filtered out
+        app.run_command("4");
+        assert_eq!(app.current_line(), Some(4)); // revealed and jumped to
     }
 
     #[test]

@@ -51,8 +51,10 @@ persistence entirely. All history I/O is best-effort and never blocks the viewer
 | Move | `j`/`k` or `↓`/`↑` | line down / up |
 | | `f`/`b`, `Space`/`PgDn`/`PgUp`, `^F`/`^B` | page down / up |
 | | `g` / `G` | top / bottom |
+| | `H` / `M` / `L` | cursor to screen top / middle / bottom (no scroll) |
+| | `:N` `Enter` · `:$` | go to line N · last line |
 | Long lines | `←` / `→` | pan · `0` reset pan · `w` toggle in-place wrap |
-| Search | `/` | search · `n`/`N` next/prev · `^R` regex · `^A` case · `↑`/`↓` history · `Esc` clear |
+| Search | `/` | search · `n`/`N` next/prev from cursor · `^R` regex · `^A` case · `↑`/`↓` history · `Esc` clear |
 | Highlight | `h` | add a coloured highlight term |
 | Filter | `F` add · `o` toggle AND/OR | reduces the view to matching lines (gaps collapse the rest) |
 | Bookmarks | `B` toggle · `[` / `]` prev/next | bookmarked lines stay visible when filtered |
@@ -127,7 +129,7 @@ licenses). `Depends:` is derived automatically from the linked libraries.
 
 ```
 cargo install cargo-deb
-cargo deb            # → target/debian/zerch_0.4.1_<arch>.deb
+cargo deb            # → target/debian/zerch_0.4.2_<arch>.deb
 sudo apt install ./target/debian/zerch_*.deb
 ```
 
@@ -138,7 +140,7 @@ A debhelper source package lives in `debian/` (required at the repo root by
 
 ```
 sudo apt install devscripts debhelper cargo rustc
-dpkg-buildpackage -us -uc -b     # → ../zerch_0.4.1_<arch>.deb
+dpkg-buildpackage -us -uc -b     # → ../zerch_0.4.2_<arch>.deb
 ```
 
 `cargo` fetches the crate dependencies during the build, so the build host needs

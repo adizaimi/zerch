@@ -29,13 +29,22 @@ inside the viewer for the full, interactive cheat\-sheet. A summary:
 .B j k \(ua \(da f b g G
 Move by line, page, or to the top/bottom.
 .TP
+.B H M L
+Move the cursor to the top, middle, or bottom of the visible screen (no scroll).
+.TP
+.BI : N
+Go to line
+.IR N ;
+.B :$
+goes to the last line.
+.TP
 .B \(<- \(-> 0 w
 Pan long lines, reset pan, toggle in\-place wrap.
 .TP
 .B /
 Search;
 .B n N
-next/previous match;
+next/previous match from the cursor;
 .B ^R
 regex,
 .B ^A

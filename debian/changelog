@@ -1,3 +1,11 @@
+zerch (0.4.2) unstable; urgency=medium
+
+  * Vim-style navigation: H/M/L move the cursor to the top/middle/bottom of the
+    visible screen, ":N" jumps to line N (":$" to the last line), and n/N now
+    step to the next/previous match relative to the cursor.
+
+ -- Adi Zaimi <adizaimi@yahoo.com>  Sat, 22 Aug 2026 12:00:00 +0000
+
 zerch (0.4.1) unstable; urgency=medium
 
   * Remember the last 100 search / filter / highlight terms across sessions
