@@ -52,7 +52,7 @@ persistence entirely. All history I/O is best-effort and never blocks the viewer
 | | `f`/`b`, `Space`/`PgDn`/`PgUp`, `^F`/`^B` | page down / up |
 | | `g` / `G` | top / bottom |
 | | `H` / `M` / `L` | cursor to screen top / middle / bottom (no scroll) |
-| | `:N` `Enter` · `:$` | go to line N · last line |
+| | `:N` `Enter` · `:$` · `:q` | go to line N · last line · quit |
 | Long lines | `←` / `→` | pan · `0` reset pan · `w` toggle in-place wrap |
 | Search | `/` | search · `n`/`N` next/prev from cursor · `^R` regex · `^A` case · `↑`/`↓` history · `Esc` clear |
 | Highlight | `h` | add a coloured highlight term |

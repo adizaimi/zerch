@@ -428,12 +428,14 @@ impl App {
         if c.is_empty() {
             return;
         }
-        if c == "$" {
+        if c == "q" || c == "quit" {
+            self.should_quit = true; // vim :q — quit straight away (read-only viewer)
+        } else if c == "$" {
             self.goto_line(self.total);
         } else if let Ok(n) = c.parse::<usize>() {
             self.goto_line(n);
         } else {
-            self.hint = Some("unknown command (try :N or :$)");
+            self.hint = Some("unknown command (try :N, :$, or :q)");
         }
     }
 
@@ -1853,7 +1855,7 @@ impl App {
             }
             Mode::Command => {
                 let mut spans = self.input_spans(":");
-                spans.push(Span::styled("  line number · $ = last · Enter go", dim));
+                spans.push(Span::styled("  line number · $ = last · q = quit · Enter", dim));
                 Line::from(spans)
             }
             Mode::Hist => Line::from(Span::styled(
@@ -1943,7 +1945,7 @@ fn name_color(name: &str) -> Color {
 fn help_lines() -> Vec<Line<'static>> {
     const ROWS: &[&str] = &[
         "Movement   j/k or ↑/↓ move · f/b (or space/PgDn, ^F/^B) page · g/G top/bottom",
-        "           H/M/L cursor to screen top/middle/bottom · :N go to line N · :$ last",
+        "           H/M/L cursor to screen top/middle/bottom · :N go to line N · :$ last · :q quit",
         "Long lines ←/→ pan · 0 reset pan · w toggle in-place wrap",
         "Search     / search · n/N next/prev (from cursor) · ^R regex · ^A case · ↑/↓ history · Esc clear",
         "Highlight  h add a coloured highlight term",
@@ -2170,6 +2172,16 @@ mod tests {
         app.run_command("nope");
         assert_eq!(app.current_line(), Some(100));
         assert!(app.hint.is_some());
+    }
+
+    #[test]
+    fn command_quit() {
+        let mut app = app_n(10);
+        app.run_command("q");
+        assert!(app.should_quit);
+        let mut app = app_n(10);
+        app.run_command("quit");
+        assert!(app.should_quit);
     }
 
     #[test]
