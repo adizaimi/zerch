@@ -1060,7 +1060,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "zerch"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "chrono",
  "form_urlencoded",

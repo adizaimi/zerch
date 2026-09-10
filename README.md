@@ -58,6 +58,7 @@ persistence entirely. All history I/O is best-effort and never blocks the viewer
 | Highlight | `h` | add a coloured highlight term |
 | Filter | `F` add · `o` toggle AND/OR | reduces the view to matching lines (gaps collapse the rest) |
 | Bookmarks | `B` toggle · `[` / `]` prev/next | bookmarked lines stay visible when filtered |
+| Hide | `x` on a line | hide it (collapses to a gap); reveal the gap or menu `X` to undo |
 | Gaps | `Enter`/`+` from top · `-` from bottom | reveal hidden lines a chunk at a time |
 | Expand | `Enter` on a line | JSON view, or a wrapped view if the line doesn't fit |
 | Histogram | `T` show/hide · `t` re-enter | `←/→` move · `a` anchor · `Enter` apply · `c` clear time range |
@@ -129,7 +130,7 @@ licenses). `Depends:` is derived automatically from the linked libraries.
 
 ```
 cargo install cargo-deb
-cargo deb            # → target/debian/zerch_0.4.2_<arch>.deb
+cargo deb            # → target/debian/zerch_0.4.3_<arch>.deb
 sudo apt install ./target/debian/zerch_*.deb
 ```
 
@@ -140,7 +141,7 @@ A debhelper source package lives in `debian/` (required at the repo root by
 
 ```
 sudo apt install devscripts debhelper cargo rustc
-dpkg-buildpackage -us -uc -b     # → ../zerch_0.4.2_<arch>.deb
+dpkg-buildpackage -us -uc -b     # → ../zerch_0.4.3_<arch>.deb
 ```
 
 `cargo` fetches the crate dependencies during the build, so the build host needs

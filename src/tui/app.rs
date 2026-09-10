@@ -23,7 +23,7 @@ use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 const HINT: &str =
-    "j/k f/b H/M/L · /search n/N :N goto · F filter h hl B mark · T hist m menu · w wrap ? help q quit";
+    "j/k f/b H/M/L · /search n/N :N goto · F filter h hl B mark x hide · T hist m menu · w wrap ? help q quit";
 const CURSOR_BG: Color = Color::Indexed(236);
 const EXPAND_CHUNK: usize = 5;
 
@@ -128,6 +128,7 @@ pub struct App {
     filter_mode: FilterMode,
     bookmarks: BTreeSet<usize>,
     visible_lines: BTreeSet<usize>,
+    hidden_lines: BTreeSet<usize>,
     time_range: Option<(i64, i64)>,
     show_hist: bool,
     hist: Option<Histogram>,
@@ -187,6 +188,7 @@ impl App {
             filter_mode: FilterMode::And,
             bookmarks: BTreeSet::new(),
             visible_lines: BTreeSet::new(),
+            hidden_lines: BTreeSet::new(),
             time_range: None,
             show_hist: false,
             hist: None,
@@ -215,6 +217,7 @@ impl App {
         self.reset_counts_pending();
         self.bookmarks = v.bookmarks.into_iter().collect();
         self.visible_lines = v.visible.into_iter().collect();
+        self.hidden_lines = v.hidden.into_iter().collect();
         self.search_regex = v.search_regex;
         self.search_case = v.search_case;
         if !v.search.is_empty() {
@@ -637,19 +640,27 @@ impl App {
             })
             .collect();
 
-        if enabled.is_empty() && self.time_range.is_none() {
+        let unfiltered = enabled.is_empty() && self.time_range.is_none();
+        if unfiltered && self.hidden_lines.is_empty() {
             self.displayed = None;
         } else {
-            let scope = Scope {
-                time_range: self.time_range,
-                levels: Vec::new(),
+            // Without a filter but with hidden lines, the base set is every line
+            // (build_displayed_items subtracts `hidden`, leaving gaps where they were).
+            let matches: Vec<usize> = if unfiltered {
+                (1..=self.total).collect()
+            } else {
+                let scope = Scope {
+                    time_range: self.time_range,
+                    levels: Vec::new(),
+                };
+                search(&self.index, &enabled, &scope)
+                    .map(|r| r.matching_lines)
+                    .unwrap_or_default()
             };
-            let matches = search(&self.index, &enabled, &scope)
-                .map(|r| r.matching_lines)
-                .unwrap_or_default();
             let bm: Vec<usize> = self.bookmarks.iter().copied().collect();
             let vis: Vec<usize> = self.visible_lines.iter().copied().collect();
-            self.displayed = Some(build_displayed_items(&matches, &bm, &[], &vis, self.total));
+            let hid: Vec<usize> = self.hidden_lines.iter().copied().collect();
+            self.displayed = Some(build_displayed_items(&matches, &bm, &[], &vis, &hid, self.total));
         }
         self.rebuild_line_index();
         self.refresh_matches_in_view();
@@ -710,6 +721,15 @@ impl App {
         }
     }
 
+    // `x`: hide the cursor's line. It collapses into a gap; re-reveal it with the
+    // usual gap keys (+/Enter/-) or "clear hidden" in the menu.
+    fn hide_current_line(&mut self) {
+        if let Some(n) = self.current_line() {
+            self.hidden_lines.insert(n);
+            self.refresh_preserving();
+        }
+    }
+
     fn goto_bookmark(&mut self, forward: bool) {
         if self.bookmarks.is_empty() {
             return;
@@ -737,6 +757,7 @@ impl App {
             };
             for i in lo..=hi {
                 self.visible_lines.insert(i);
+                self.hidden_lines.remove(&i); // revealing a gap also un-hides
             }
             self.recompute();
             let focus = if from_top { lo } else { hi };
@@ -1087,6 +1108,12 @@ impl App {
                     self.refresh_preserving();
                 }
             }
+            KeyCode::Char('X') => {
+                if !self.hidden_lines.is_empty() {
+                    self.hidden_lines.clear();
+                    self.refresh_preserving();
+                }
+            }
             KeyCode::Char('f') => {
                 self.overlay = Overlay::None;
                 self.mode = Mode::Filter;
@@ -1111,6 +1138,7 @@ impl App {
             highlights: self.highlights.clone(),
             bookmarks: self.bookmarks.iter().copied().collect(),
             visible: self.visible_lines.iter().copied().collect(),
+            hidden: self.hidden_lines.iter().copied().collect(),
             search: self.search_term.clone(),
             search_regex: self.search_regex,
             search_case: self.search_case,
@@ -1226,7 +1254,7 @@ impl App {
     fn render_menu(&mut self, f: &mut Frame) {
         let area = f.area();
         let block = Block::bordered().title(
-            " Menu · space toggle · r rx · i case · x neg · d del · C/c/B clear · o AND/OR · f/h add · s syntax · e view · g grep · q close ",
+            " Menu · space toggle · r rx · i case · x neg · d del · C/c/B/X clear filt/hl/bm/hidden · o AND/OR · f/h add · s syntax · e view · g grep · q close ",
         );
         let inner = block.inner(area);
         let nf = self.filters.len();
@@ -1272,6 +1300,13 @@ impl App {
             format!(
                 "Bookmarks  {}",
                 if bm.is_empty() { "(none)".to_string() } else { bm.join(", ") }
+            ),
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "Hidden lines: {}  (x hides the cursor line; reveal the gap to undo · X clears)",
+                self.hidden_lines.len()
             ),
             Style::default().fg(Color::DarkGray),
         )));
@@ -1499,6 +1534,7 @@ impl App {
             KeyCode::Char('n') => self.goto_match_relative(true),
             KeyCode::Char('N') => self.goto_match_relative(false),
             KeyCode::Char('B') => self.toggle_bookmark(),
+            KeyCode::Char('x') => self.hide_current_line(),
             KeyCode::Char('[') => self.goto_bookmark(false),
             KeyCode::Char(']') => self.goto_bookmark(true),
             KeyCode::Char('o') => self.toggle_filter_mode(),
@@ -1951,6 +1987,7 @@ fn help_lines() -> Vec<Line<'static>> {
         "Highlight  h add a coloured highlight term",
         "Filter     F add filter · o toggle AND/OR",
         "Bookmarks  B toggle on cursor line · [ / ] previous/next bookmark",
+        "Hide       x hide the cursor line (collapses to a gap) · reveal the gap or menu X to undo",
         "Gaps       Enter/+ reveal from top · - reveal from bottom",
         "Expand     Enter on a line: JSON view, or wrapped view if it doesn't fit",
         "Other      ? this help · q quit (confirm) · ^C quit now",
@@ -2191,6 +2228,54 @@ mod tests {
         assert!(app.pos_of_line(4).is_none()); // line 4 filtered out
         app.run_command("4");
         assert_eq!(app.current_line(), Some(4)); // revealed and jumped to
+    }
+
+    #[test]
+    fn hide_collapses_line_and_reveal_undoes() {
+        let mut app = app_n(10);
+        app.jump_to(4); // cursor on line 5
+        assert_eq!(app.current_line(), Some(5));
+        app.hide_current_line();
+        assert!(app.hidden_lines.contains(&5));
+        assert!(app.pos_of_line(5).is_none()); // collapsed into a gap
+        let has_gap = app
+            .displayed
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|it| matches!(it, DisplayedItem::Gap { start, end } if *start <= 5 && *end >= 5));
+        assert!(has_gap);
+        // Revealing the gap un-hides the line and returns to the full view.
+        app.gap_action(true);
+        assert!(app.hidden_lines.is_empty());
+        assert!(app.pos_of_line(5).is_some());
+        assert!(app.displayed.is_none());
+    }
+
+    #[test]
+    fn menu_clear_hidden() {
+        let mut app = app_n(10);
+        app.jump_to(2);
+        app.hide_current_line();
+        app.jump_to(6);
+        app.hide_current_line();
+        assert_eq!(app.hidden_lines.len(), 2);
+        app.overlay = Overlay::Menu;
+        app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE));
+        assert!(app.hidden_lines.is_empty());
+    }
+
+    #[test]
+    fn hidden_round_trips_through_view() {
+        let mut app = app_n(10);
+        app.jump_to(4);
+        app.hide_current_line();
+        let v = app.current_view();
+        assert_eq!(v.hidden, vec![5]);
+        let mut app2 = app_n(10);
+        app2.apply_view(v);
+        assert!(app2.hidden_lines.contains(&5));
+        assert!(app2.pos_of_line(5).is_none());
     }
 
     #[test]

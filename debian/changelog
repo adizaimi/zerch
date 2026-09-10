@@ -1,3 +1,11 @@
+zerch (0.4.3) unstable; urgency=medium
+
+  * Hide specific lines: press "x" on a line to hide it (it collapses into a
+    gap). Reveal the gap or press "X" in the menu to bring hidden lines back.
+    Hidden lines are saved in the --view string.
+
+ -- Adi Zaimi <adizaimi@yahoo.com>  Thu, 10 Sep 2026 12:00:00 +0000
+
 zerch (0.4.2) unstable; urgency=medium
 
   * Vim-style navigation: H/M/L move the cursor to the top/middle/bottom of the

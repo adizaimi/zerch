@@ -21,6 +21,7 @@ pub fn build_displayed_items(
     bookmarked: &[usize],
     expanded: &[usize],
     visible: &[usize],
+    hidden: &[usize],
     total_lines: usize,
 ) -> Vec<DisplayedItem> {
     let mut set: BTreeSet<usize> = BTreeSet::new();
@@ -37,6 +38,11 @@ pub fn build_displayed_items(
         for i in lo..=hi {
             set.insert(i);
         }
+    }
+    // Explicitly hidden lines are removed last, so a hide wins over a match,
+    // bookmark, reveal, or expand-context — and collapses into a gap.
+    for &h in hidden {
+        set.remove(&h);
     }
 
     let sorted: Vec<usize> = set.into_iter().collect();
@@ -93,14 +99,14 @@ mod tests {
 
     #[test]
     fn no_gaps_for_consecutive() {
-        let items = build_displayed_items(&[1, 2, 3, 4], &[], &[], &[], 0);
+        let items = build_displayed_items(&[1, 2, 3, 4], &[], &[], &[], &[], 0);
         assert_eq!(lines(&items), vec![1, 2, 3, 4]);
         assert!(gaps(&items).is_empty());
     }
 
     #[test]
     fn inserts_gap_between_non_consecutive() {
-        let items = build_displayed_items(&[1, 10], &[], &[], &[], 0);
+        let items = build_displayed_items(&[1, 10], &[], &[], &[], &[], 0);
         assert_eq!(
             items,
             vec![
@@ -113,40 +119,40 @@ mod tests {
 
     #[test]
     fn merges_dedupes_sorts_matching_and_bookmarks() {
-        let items = build_displayed_items(&[5, 3, 5], &[3, 7], &[], &[], 0);
+        let items = build_displayed_items(&[5, 3, 5], &[3, 7], &[], &[], &[], 0);
         assert_eq!(lines(&items), vec![3, 5, 7]);
         assert_eq!(gaps(&items), vec![(4, 4), (6, 6)]);
     }
 
     #[test]
     fn context_around_expanded_clamped_low() {
-        let items = build_displayed_items(&[], &[], &[3], &[], 0);
+        let items = build_displayed_items(&[], &[], &[3], &[], &[], 0);
         assert_eq!(lines(&items), vec![1, 2, 3, 4, 5, 6, 7, 8]);
         assert!(gaps(&items).is_empty());
     }
 
     #[test]
     fn context_clamped_to_total() {
-        let items = build_displayed_items(&[], &[], &[10], &[], 12);
+        let items = build_displayed_items(&[], &[], &[10], &[], &[], 12);
         assert_eq!(lines(&items), vec![5, 6, 7, 8, 9, 10, 11, 12]);
     }
 
     #[test]
     fn context_unclamped_when_total_unknown() {
-        let items = build_displayed_items(&[], &[], &[10], &[], 0);
+        let items = build_displayed_items(&[], &[], &[10], &[], &[], 0);
         assert_eq!(lines(&items), vec![5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     }
 
     #[test]
     fn visible_ranges_merge_like_bookmarks() {
-        let items = build_displayed_items(&[3], &[], &[], &[8, 3], 0);
+        let items = build_displayed_items(&[3], &[], &[], &[8, 3], &[], 0);
         assert_eq!(lines(&items), vec![3, 8]);
         assert_eq!(gaps(&items), vec![(4, 7)]);
     }
 
     #[test]
     fn boundary_gaps_top_and_bottom() {
-        let items = build_displayed_items(&[5], &[], &[], &[], 1000);
+        let items = build_displayed_items(&[5], &[], &[], &[], &[], 1000);
         assert_eq!(
             items,
             vec![
@@ -159,13 +165,21 @@ mod tests {
 
     #[test]
     fn no_boundary_gaps_when_spanning_file() {
-        let items = build_displayed_items(&[1, 2, 3], &[], &[], &[], 3);
+        let items = build_displayed_items(&[1, 2, 3], &[], &[], &[], &[], 3);
         assert!(gaps(&items).is_empty());
     }
 
     #[test]
+    fn hidden_lines_become_gaps_and_win_over_bookmarks() {
+        // 1..=5 shown, hide 3 → gap at 3; hide wins even when 3 is bookmarked.
+        let items = build_displayed_items(&[1, 2, 3, 4, 5], &[3], &[], &[], &[3], 0);
+        assert_eq!(lines(&items), vec![1, 2, 4, 5]);
+        assert_eq!(gaps(&items), vec![(3, 3)]);
+    }
+
+    #[test]
     fn empty_when_nothing_displayed() {
-        assert_eq!(build_displayed_items(&[], &[], &[], &[], 0), vec![]);
-        assert_eq!(build_displayed_items(&[], &[], &[], &[], 1000), vec![]);
+        assert_eq!(build_displayed_items(&[], &[], &[], &[], &[], 0), vec![]);
+        assert_eq!(build_displayed_items(&[], &[], &[], &[], &[], 1000), vec![]);
     }
 }

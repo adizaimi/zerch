@@ -51,6 +51,7 @@ pub struct ViewState {
     pub highlights: Vec<HighlightEntry>,
     pub bookmarks: Vec<usize>,
     pub visible: Vec<usize>, // "unhidden" (gap-revealed) line numbers
+    pub hidden: Vec<usize>,  // explicitly hidden line numbers (the `x` command)
     pub search: String,
     pub search_regex: bool,
     pub search_case: bool,
@@ -131,6 +132,9 @@ pub fn serialize_view(v: &ViewState) -> String {
     }
     if !v.visible.is_empty() {
         p.append_pair("visible", &encode_runs(&v.visible));
+    }
+    if !v.hidden.is_empty() {
+        p.append_pair("hidden", &encode_runs(&v.hidden));
     }
 
     let hs: Vec<&HighlightEntry> = v.highlights.iter().filter(|h| !h.term.is_empty()).collect();
@@ -220,6 +224,7 @@ pub fn parse_view(query: &str) -> ViewState {
         highlights,
         bookmarks: parse_range_spec(&get("bookmarks")),
         visible: parse_range_spec(&get("visible")),
+        hidden: parse_range_spec(&get("hidden")),
         search: get("search"),
         search_regex: get("srx") == "1",
         search_case: get("scase") == "1",
@@ -320,10 +325,16 @@ mod tests {
 
     #[test]
     fn bookmarks_and_visible_round_trip() {
-        let v = ViewState { bookmarks: vec![4, 7], visible: vec![3, 4, 5, 8], ..base() };
+        let v = ViewState {
+            bookmarks: vec![4, 7],
+            visible: vec![3, 4, 5, 8],
+            hidden: vec![10, 11, 12, 20],
+            ..base()
+        };
         let back = parse_view(&serialize_view(&v));
         assert_eq!(back.bookmarks, vec![4, 7]);
         assert_eq!(back.visible, vec![3, 4, 5, 8]);
+        assert_eq!(back.hidden, vec![10, 11, 12, 20]);
     }
 
     #[test]
