@@ -1,3 +1,15 @@
+zerch (0.5.0) unstable; urgency=medium
+
+  * Per-file sessions: each file's view (filters, highlights, bookmarks, hidden
+    lines, search, and the cursor line) is saved on exit and restored on the
+    next run (--fresh opens clean, ZERCH_NO_SESSION=1 disables). A numeric prefix
+    before the arrows pans by that many columns. Field hiding: inline-editable
+    Separator and Hide Columns menu fields blank chosen columns with an ellipsis.
+    The Bookmarks menu entry is now inline-editable, and the syntax-colour toggle
+    is saved in the --view string.
+
+ -- Adi Zaimi <adizaimi@yahoo.com>  Fri, 11 Sep 2026 12:00:00 +0000
+
 zerch (0.4.3) unstable; urgency=medium
 
   * Hide specific lines: press "x" on a line to hide it (it collapses into a
