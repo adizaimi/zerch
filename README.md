@@ -76,6 +76,7 @@ Piped/stdin input has no session (there's no stable file to key on).
 | Expand | `Enter` on a line | JSON view, or a wrapped view if the line doesn't fit |
 | Histogram | `T` show/hide · `t` re-enter | `←/→` move · `a` anchor · `Enter` apply · `c` clear time range |
 | Menu | `m` | toggle/edit/delete filters & highlights; `e` export view string; `g` export grep/awk |
+| Field hiding | in the menu | edit `Separator` and `Hide Columns` (e.g. `1,2,5`) inline (Enter to edit) — chosen columns render as `…` |
 | Other | `?` help · `q` quit (confirm) · `^C` quit now | |
 
 ## Building

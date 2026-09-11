@@ -46,6 +46,42 @@ enum ScreenPos {
     Bottom,
 }
 
+/// The two inline-editable fields in the menu (field-hiding config).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MenuField {
+    Separator,
+    Columns,
+}
+
+/// How a line is split into columns for field-hiding.
+enum FieldSep {
+    Char(char),
+    Whitespace,
+}
+
+/// Interpret the separator field text: `space`/`ws`/`whitespace` → whitespace
+/// runs, `tab` → a tab, empty → the default comma, otherwise the first char.
+fn parse_sep(s: &str) -> FieldSep {
+    match s.trim() {
+        "space" | "ws" | "whitespace" => FieldSep::Whitespace,
+        "tab" => FieldSep::Char('\t'),
+        "" => FieldSep::Char(','),
+        other => FieldSep::Char(other.chars().next().unwrap_or(',')),
+    }
+}
+
+/// Parse a "1,2,5" column list into sorted, deduped 1-based indices.
+fn parse_cols(s: &str) -> Vec<usize> {
+    let mut v: Vec<usize> = s
+        .split(',')
+        .filter_map(|t| t.trim().parse::<usize>().ok())
+        .filter(|&n| n >= 1)
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 /// Per-term hit-count state. Distinguishes "not yet scanned" from "scanned but
@@ -149,6 +185,13 @@ pub struct App {
     /// as the pan distance in columns. `None` when no digits are pending.
     pending_count: Option<usize>,
 
+    /// Field-hiding: split each line on `col_sep_text` and replace the 1-based
+    /// columns listed in `hide_cols_text` with `…`. Both are edited inline in the
+    /// menu. `menu_edit` is the field currently being edited (into `self.input`).
+    col_sep_text: String,
+    hide_cols_text: String,
+    menu_edit: Option<MenuField>,
+
     confirm_quit: bool,
     pub should_quit: bool,
     /// Set on Ctrl-Z; the run loop suspends the process to the background.
@@ -204,6 +247,9 @@ impl App {
             filter_counts: Vec::new(),
             highlight_counts: Vec::new(),
             pending_count: None,
+            col_sep_text: ",".to_string(),
+            hide_cols_text: String::new(),
+            menu_edit: None,
             confirm_quit: false,
             should_quit: false,
             suspend: false,
@@ -222,6 +268,8 @@ impl App {
         self.bookmarks = v.bookmarks.into_iter().collect();
         self.visible_lines = v.visible.into_iter().collect();
         self.hidden_lines = v.hidden.into_iter().collect();
+        self.hide_cols_text = v.hide_cols;
+        self.col_sep_text = if v.col_sep.is_empty() { ",".to_string() } else { v.col_sep };
         self.search_regex = v.search_regex;
         self.search_case = v.search_case;
         if !v.search.is_empty() {
@@ -877,7 +925,7 @@ impl App {
                 }
                 lines
             }
-            Overlay::Line(n) => wrap_styled(&self.style_line(*n), inner_w),
+            Overlay::Line(n) => wrap_styled(&self.style_line(*n, false), inner_w),
             Overlay::Text { body, .. } => {
                 body.iter().flat_map(|l| wrap_plain(l, inner_w)).collect()
             }
@@ -1041,15 +1089,40 @@ impl App {
         let nf = self.filters.len();
         (self.menu_sel >= nf && self.menu_sel < nf + self.highlights.len()).then(|| self.menu_sel - nf)
     }
+    // The two inline-editable field rows sit just after the highlights.
+    fn sel_field(&self) -> Option<MenuField> {
+        let base = self.filters.len() + self.highlights.len();
+        match self.menu_sel.checked_sub(base) {
+            Some(0) => Some(MenuField::Separator),
+            Some(1) => Some(MenuField::Columns),
+            _ => None,
+        }
+    }
+    fn menu_rows(&self) -> usize {
+        self.filters.len() + self.highlights.len() + 2 // + Separator, Hide Columns
+    }
 
     fn handle_menu_key(&mut self, key: KeyEvent) {
-        let total = self.filters.len() + self.highlights.len();
+        // While editing an inline field, all keys go to the field editor.
+        if self.menu_edit.is_some() {
+            self.handle_menu_edit_key(key);
+            return;
+        }
+        let total = self.menu_rows();
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('m') | KeyCode::Esc => self.overlay = Overlay::None,
-            KeyCode::Char('j') | KeyCode::Down => {
-                if total > 0 {
-                    self.menu_sel = (self.menu_sel + 1).min(total - 1);
+            KeyCode::Enter => {
+                if let Some(field) = self.sel_field() {
+                    self.menu_edit = Some(field);
+                    self.input = match field {
+                        MenuField::Separator => self.col_sep_text.clone(),
+                        MenuField::Columns => self.hide_cols_text.clone(),
+                    };
+                    self.input_cursor = self.input.chars().count();
                 }
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.menu_sel = (self.menu_sel + 1).min(total - 1);
             }
             KeyCode::Char('k') | KeyCode::Up => self.menu_sel = self.menu_sel.saturating_sub(1),
             KeyCode::Char(' ') => {
@@ -1142,6 +1215,53 @@ impl App {
         }
     }
 
+    // Inline editor for the Separator / Hide Columns menu fields. Reuses
+    // `self.input`; Enter commits, Esc cancels, editing keys mirror the prompt.
+    fn handle_menu_edit_key(&mut self, key: KeyEvent) {
+        let len = self.input.chars().count();
+        match key.code {
+            KeyCode::Enter => {
+                let val = self.input.trim().to_string();
+                match self.menu_edit {
+                    Some(MenuField::Separator) => {
+                        self.col_sep_text = if val.is_empty() { ",".to_string() } else { val };
+                    }
+                    Some(MenuField::Columns) => self.hide_cols_text = val,
+                    None => {}
+                }
+                self.menu_edit = None;
+                self.reset_input();
+            }
+            KeyCode::Esc => {
+                self.menu_edit = None;
+                self.reset_input();
+            }
+            KeyCode::Backspace => {
+                if self.input_cursor > 0 {
+                    let b = self.input_byte(self.input_cursor - 1);
+                    self.input.remove(b);
+                    self.input_cursor -= 1;
+                }
+            }
+            KeyCode::Delete => {
+                if self.input_cursor < len {
+                    let b = self.input_byte(self.input_cursor);
+                    self.input.remove(b);
+                }
+            }
+            KeyCode::Left => self.input_cursor = self.input_cursor.saturating_sub(1),
+            KeyCode::Right => self.input_cursor = (self.input_cursor + 1).min(len),
+            KeyCode::Home => self.input_cursor = 0,
+            KeyCode::End => self.input_cursor = len,
+            KeyCode::Char(c) => {
+                let b = self.input_byte(self.input_cursor);
+                self.input.insert(b, c);
+                self.input_cursor += 1;
+            }
+            _ => {}
+        }
+    }
+
     fn current_view(&self) -> ViewState {
         ViewState {
             filters: self.filters.clone(),
@@ -1154,6 +1274,9 @@ impl App {
             search_regex: self.search_regex,
             search_case: self.search_case,
             selected: self.current_line(),
+            hide_cols: self.hide_cols_text.clone(),
+            // Emit the separator only when it differs from the default comma.
+            col_sep: if self.col_sep_text == "," { String::new() } else { self.col_sep_text.clone() },
         }
     }
 
@@ -1262,6 +1385,28 @@ impl App {
         false
     }
 
+    // One inline-editable menu field row: shows the value, or a live caret editor
+    // when this field is being edited.
+    fn menu_field_row(&self, label: &str, value: &str, selected: bool, field: MenuField) -> Line<'static> {
+        let cur = if selected { "▸ " } else { "  " };
+        if self.menu_edit == Some(field) {
+            let mut spans = vec![
+                Span::styled(cur.to_string(), Style::default().fg(Color::Yellow)),
+                Span::raw(label.to_string()),
+            ];
+            spans.extend(self.input_spans(""));
+            Line::from(spans)
+        } else {
+            let shown = if value.is_empty() { "(none)".to_string() } else { value.to_string() };
+            let style = if selected {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            Line::from(Span::styled(format!("{cur}{label}{shown}"), style))
+        }
+    }
+
     fn render_menu(&mut self, f: &mut Frame) {
         let area = f.area();
         let block = Block::bordered().title(
@@ -1304,6 +1449,25 @@ impl App {
                 self.highlight_counts.get(j).copied().unwrap_or(Count::Pending),
             ));
         }
+
+        let nh = self.highlights.len();
+        lines.push(Line::from(String::new()));
+        lines.push(Line::from(Span::styled(
+            "Field hiding  (Enter to edit · … replaces hidden columns)",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        lines.push(self.menu_field_row(
+            "Separator:    ",
+            &self.col_sep_text,
+            self.menu_sel == nf + nh,
+            MenuField::Separator,
+        ));
+        lines.push(self.menu_field_row(
+            "Hide Columns: ",
+            &self.hide_cols_text,
+            self.menu_sel == nf + nh + 1,
+            MenuField::Columns,
+        ));
 
         lines.push(Line::from(String::new()));
         let bm: Vec<String> = self.bookmarks.iter().map(|b| b.to_string()).collect();
@@ -1656,8 +1820,46 @@ impl App {
     // Per-character styled content for one line: syntax base (opt-in) with
     // highlight boxes and the search overlay layered on top. Precedence:
     // search > highlight > syntax > plain.
-    fn style_line(&self, n: usize) -> Vec<(char, Style)> {
-        let raw = self.index.get_line(n).replace('\t', "  ");
+    fn col_hide_active(&self) -> bool {
+        !parse_cols(&self.hide_cols_text).is_empty()
+    }
+
+    // Replace the configured 1-based columns with "…", splitting on the chosen
+    // separator. Char separators preserve the delimiter; whitespace mode collapses
+    // runs to single spaces. Applied before highlight/search/syntax so their
+    // offsets line up with what's shown.
+    fn apply_col_hide(&self, raw: &str) -> String {
+        let cols = parse_cols(&self.hide_cols_text);
+        if cols.is_empty() {
+            return raw.to_string();
+        }
+        let blank = |i: usize, part: &str| -> String {
+            if cols.contains(&(i + 1)) { "…".to_string() } else { part.to_string() }
+        };
+        match parse_sep(&self.col_sep_text) {
+            FieldSep::Char(c) => raw
+                .split(c)
+                .enumerate()
+                .map(|(i, p)| blank(i, p))
+                .collect::<Vec<_>>()
+                .join(&c.to_string()),
+            FieldSep::Whitespace => raw
+                .split_whitespace()
+                .enumerate()
+                .map(|(i, p)| blank(i, p))
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+    }
+
+    fn style_line(&self, n: usize, hide_cols: bool) -> Vec<(char, Style)> {
+        let line = self.index.get_line(n);
+        let base = if hide_cols && self.col_hide_active() {
+            self.apply_col_hide(&line)
+        } else {
+            line.into_owned()
+        };
+        let raw = base.replace('\t', "  ");
         let specs = self.enabled_highlight_specs();
         let spans = build_spans(
             &raw,
@@ -1744,7 +1946,7 @@ impl App {
         gutter: usize,
         content_w: usize,
     ) {
-        let styled = self.style_line(n);
+        let styled = self.style_line(n, true);
         let num_style = if self.bookmarks.contains(&n) {
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
         } else {
@@ -2338,6 +2540,54 @@ mod tests {
         app2.apply_view(v);
         assert!(app2.hidden_lines.contains(&5));
         assert!(app2.pos_of_line(5).is_none());
+    }
+
+    #[test]
+    fn col_hide_char_and_whitespace() {
+        let mut app = app_n(1);
+        app.hide_cols_text = "2,4".into();
+        app.col_sep_text = ",".into();
+        assert_eq!(app.apply_col_hide("a,b,c,d"), "a,…,c,…");
+        assert_eq!(app.apply_col_hide("a,b"), "a,…"); // col 4 absent → ignored
+        app.col_sep_text = "space".into();
+        app.hide_cols_text = "1,3".into();
+        assert_eq!(app.apply_col_hide("2026 INFO foo bar"), "… INFO … bar");
+        app.hide_cols_text = "".into();
+        assert_eq!(app.apply_col_hide("a,b,c"), "a,b,c"); // no columns → unchanged
+    }
+
+    #[test]
+    fn col_hide_round_trips_through_view() {
+        use crate::view::state::parse_view;
+        let mut app = app_n(5);
+        app.hide_cols_text = "1,3".into();
+        app.col_sep_text = "|".into();
+        let v = app.current_view();
+        assert_eq!(v.hide_cols, "1,3");
+        assert_eq!(v.col_sep, "|");
+        let mut app2 = app_n(5);
+        app2.apply_view(parse_view(&serialize_view(&v)));
+        assert_eq!(app2.hide_cols_text, "1,3");
+        assert_eq!(app2.col_sep_text, "|");
+    }
+
+    #[test]
+    fn menu_edits_hide_columns_field_inline() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = app_n(5); // no filters/highlights → field rows at sel 0,1
+        app.overlay = Overlay::Menu;
+        app.menu_sel = 0;
+        let k = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
+        app.handle_key(k(KeyCode::Down)); // move to the Hide Columns field
+        assert_eq!(app.sel_field(), Some(MenuField::Columns));
+        app.handle_key(k(KeyCode::Enter)); // begin editing in place
+        assert_eq!(app.menu_edit, Some(MenuField::Columns));
+        for c in "2,4".chars() {
+            app.handle_key(k(KeyCode::Char(c)));
+        }
+        app.handle_key(k(KeyCode::Enter)); // commit
+        assert!(app.menu_edit.is_none());
+        assert_eq!(app.hide_cols_text, "2,4");
     }
 
     #[test]

@@ -52,6 +52,8 @@ pub struct ViewState {
     pub bookmarks: Vec<usize>,
     pub visible: Vec<usize>, // "unhidden" (gap-revealed) line numbers
     pub hidden: Vec<usize>,  // explicitly hidden line numbers (the `x` command)
+    pub hide_cols: String,   // 1-based column list to blank out, e.g. "1,2,5"
+    pub col_sep: String,     // column separator (empty = default comma)
     pub search: String,
     pub search_regex: bool,
     pub search_case: bool,
@@ -135,6 +137,12 @@ pub fn serialize_view(v: &ViewState) -> String {
     }
     if !v.hidden.is_empty() {
         p.append_pair("hidden", &encode_runs(&v.hidden));
+    }
+    if !v.hide_cols.is_empty() {
+        p.append_pair("hidecols", &v.hide_cols);
+        if !v.col_sep.is_empty() {
+            p.append_pair("colsep", &v.col_sep);
+        }
     }
 
     let hs: Vec<&HighlightEntry> = v.highlights.iter().filter(|h| !h.term.is_empty()).collect();
@@ -225,6 +233,8 @@ pub fn parse_view(query: &str) -> ViewState {
         bookmarks: parse_range_spec(&get("bookmarks")),
         visible: parse_range_spec(&get("visible")),
         hidden: parse_range_spec(&get("hidden")),
+        hide_cols: get("hidecols"),
+        col_sep: get("colsep"),
         search: get("search"),
         search_regex: get("srx") == "1",
         search_case: get("scase") == "1",
