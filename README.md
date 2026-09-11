@@ -70,7 +70,7 @@ Piped/stdin input has no session (there's no stable file to key on).
 | Search | `/` | search · `n`/`N` next/prev from cursor · `^R` regex · `^A` case · `↑`/`↓` history · `Esc` clear |
 | Highlight | `h` | add a coloured highlight term |
 | Filter | `F` add · `o` toggle AND/OR | reduces the view to matching lines (gaps collapse the rest) |
-| Bookmarks | `B` toggle · `[` / `]` prev/next | bookmarked lines stay visible when filtered |
+| Bookmarks | `B` toggle · `[` / `]` prev/next | bookmarked lines stay visible when filtered; edit the list inline in the `m` menu |
 | Hide | `x` on a line | hide it (collapses to a gap); reveal the gap or menu `X` to undo |
 | Gaps | `Enter`/`+` from top · `-` from bottom | reveal hidden lines a chunk at a time |
 | Expand | `Enter` on a line | JSON view, or a wrapped view if the line doesn't fit |

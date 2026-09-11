@@ -46,11 +46,12 @@ enum ScreenPos {
     Bottom,
 }
 
-/// The two inline-editable fields in the menu (field-hiding config).
+/// The inline-editable fields in the menu (field-hiding config + bookmarks).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum MenuField {
     Separator,
     Columns,
+    Bookmarks,
 }
 
 /// How a line is split into columns for field-hiding.
@@ -1096,11 +1097,12 @@ impl App {
         match self.menu_sel.checked_sub(base) {
             Some(0) => Some(MenuField::Separator),
             Some(1) => Some(MenuField::Columns),
+            Some(2) => Some(MenuField::Bookmarks),
             _ => None,
         }
     }
     fn menu_rows(&self) -> usize {
-        self.filters.len() + self.highlights.len() + 2 // + Separator, Hide Columns
+        self.filters.len() + self.highlights.len() + 3 // + Separator, Hide Columns, Bookmarks
     }
 
     fn handle_menu_key(&mut self, key: KeyEvent) {
@@ -1118,6 +1120,9 @@ impl App {
                     self.input = match field {
                         MenuField::Separator => self.col_sep_text.clone(),
                         MenuField::Columns => self.hide_cols_text.clone(),
+                        MenuField::Bookmarks => {
+                            self.bookmarks.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",")
+                        }
                     };
                     self.input_cursor = self.input.chars().count();
                 }
@@ -1228,6 +1233,14 @@ impl App {
                         self.col_sep_text = if val.is_empty() { ",".to_string() } else { val };
                     }
                     Some(MenuField::Columns) => self.hide_cols_text = val,
+                    Some(MenuField::Bookmarks) => {
+                        // Comma-separated 1-based line numbers, clamped to the file.
+                        self.bookmarks =
+                            parse_cols(&val).into_iter().filter(|&n| n <= self.total).collect();
+                        if self.displayed.is_some() {
+                            self.refresh_preserving();
+                        }
+                    }
                     None => {}
                 }
                 self.menu_edit = None;
@@ -1472,14 +1485,14 @@ impl App {
         ));
 
         lines.push(Line::from(String::new()));
-        let bm: Vec<String> = self.bookmarks.iter().map(|b| b.to_string()).collect();
-        lines.push(Line::from(Span::styled(
-            format!(
-                "Bookmarks  {}",
-                if bm.is_empty() { "(none)".to_string() } else { bm.join(", ") }
-            ),
-            Style::default().fg(Color::DarkGray),
-        )));
+        let bm_val: String =
+            self.bookmarks.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",");
+        lines.push(self.menu_field_row(
+            "Bookmarks:    ",
+            &bm_val,
+            self.menu_sel == nf + nh + 2,
+            MenuField::Bookmarks,
+        ));
         lines.push(Line::from(Span::styled(
             format!(
                 "Hidden lines: {}  (x hides the cursor line; reveal the gap to undo · X clears)",
@@ -2590,6 +2603,25 @@ mod tests {
         app.handle_key(k(KeyCode::Enter)); // commit
         assert!(app.menu_edit.is_none());
         assert_eq!(app.hide_cols_text, "2,4");
+    }
+
+    #[test]
+    fn menu_edits_bookmarks_field_inline() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = app_n(20); // no filters/highlights → fields at sel 0,1,2
+        app.overlay = Overlay::Menu;
+        app.menu_sel = 0;
+        let k = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
+        app.handle_key(k(KeyCode::Down)); // → Hide Columns
+        app.handle_key(k(KeyCode::Down)); // → Bookmarks
+        assert_eq!(app.sel_field(), Some(MenuField::Bookmarks));
+        app.handle_key(k(KeyCode::Enter));
+        for c in "7,4,999,4".chars() {
+            app.handle_key(k(KeyCode::Char(c)));
+        }
+        app.handle_key(k(KeyCode::Enter)); // commit
+        // sorted, deduped, and 999 (> 20 lines) clamped away
+        assert_eq!(app.bookmarks.iter().copied().collect::<Vec<_>>(), vec![4, 7]);
     }
 
     #[test]
