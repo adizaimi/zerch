@@ -44,6 +44,19 @@ $XDG_STATE_HOME/zerch/history      # or ~/.local/state/zerch/history
 Set `ZERCH_HISTFILE` to use a different path, or to `-` (or empty) to disable
 persistence entirely. All history I/O is best-effort and never blocks the viewer.
 
+### Sessions
+
+Each file's view — its filters, highlights, bookmarks, hidden lines, search, and
+the cursor line — is remembered between runs, so reopening `zerch app.log` drops
+you back exactly where you left off. Sessions are keyed by the file's canonical
+path and stored (private, `0600`) under `$XDG_STATE_HOME/zerch/sessions/`.
+
+- `--view <string>` takes precedence over a saved session.
+- `--fresh` opens the file clean, ignoring its saved session (but still saves on exit).
+- `ZERCH_NO_SESSION=1` disables saving and restoring entirely.
+
+Piped/stdin input has no session (there's no stable file to key on).
+
 ## Keys
 
 | Context | Key | Action |

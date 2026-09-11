@@ -4,9 +4,11 @@
 
 pub mod app;
 mod history;
+mod session;
 
 use crate::engine::index::LineIndex;
-use crate::view::state::ViewState;
+use crate::view::state::{parse_view, ViewState};
+use std::path::PathBuf;
 use app::App;
 use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{self, Event};
@@ -28,7 +30,17 @@ impl Drop for TermGuard {
     }
 }
 
-pub fn run(index: LineIndex, file_name: String, initial_view: Option<ViewState>) -> io::Result<()> {
+/// Run the viewer. `initial_view` (from `--view`) wins over any saved session.
+/// When `session_key` is set (a real file's canonical path), the view is saved
+/// on exit and — unless `restore_session` is false (`--fresh`) — restored on
+/// open when no `--view` was given.
+pub fn run(
+    index: LineIndex,
+    file_name: String,
+    initial_view: Option<ViewState>,
+    session_key: Option<PathBuf>,
+    restore_session: bool,
+) -> io::Result<()> {
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let _guard = TermGuard;
@@ -38,7 +50,15 @@ pub fn run(index: LineIndex, file_name: String, initial_view: Option<ViewState>)
     let mut app = App::new(index, file_name);
     // Seed the shared recent-input history from the persisted file (best-effort).
     app.set_history(history::load());
-    if let Some(v) = initial_view {
+    // Restore: explicit --view first, else the file's saved session.
+    let view = initial_view.or_else(|| {
+        if restore_session {
+            session_key.as_deref().and_then(session::load).map(|s| parse_view(&s))
+        } else {
+            None
+        }
+    });
+    if let Some(v) = view {
         app.apply_view(v);
     }
 
@@ -74,6 +94,10 @@ pub fn run(index: LineIndex, file_name: String, initial_view: Option<ViewState>)
     }
     // Persist the shared recent-input history for next time (best-effort).
     history::save(&app.history_snapshot());
+    // Persist this file's view (filters/highlights/hidden/search + cursor line).
+    if let Some(key) = &session_key {
+        session::save(key, &app.view_string());
+    }
     Ok(())
 }
 

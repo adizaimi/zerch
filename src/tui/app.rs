@@ -264,6 +264,11 @@ impl App {
         self.history.clone()
     }
 
+    /// The current view serialised as a `--view` string (for session save).
+    pub fn view_string(&self) -> String {
+        serialize_view(&self.current_view())
+    }
+
     fn count(&self) -> usize {
         self.displayed.as_ref().map_or(self.total, |d| d.len())
     }

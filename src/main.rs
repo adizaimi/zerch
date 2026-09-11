@@ -23,8 +23,13 @@ USAGE:
 OPTIONS:
     --view <string>    Restore a saved view (filters, highlights, bookmarks,
                        revealed ranges, search, selected line) from a compact,
-                       shareable token.
+                       shareable token. Takes precedence over a saved session.
+    --fresh            Open the file clean, ignoring its saved session.
     -h, --help         Print this help and exit
+
+Each file's view (filters, highlights, hidden lines, search, and the cursor
+line) is remembered between runs and restored on the next `zerch <file>`. Set
+ZERCH_NO_SESSION=1 to disable, or --fresh to skip restoring just this once.
 
 Press ? inside the viewer for the interactive keybinding cheat-sheet.
 ";
@@ -42,6 +47,7 @@ fn main() -> ExitCode {
 
     let mut file_arg: Option<String> = None;
     let mut view_str: Option<String> = None;
+    let mut fresh = false;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -53,6 +59,8 @@ fn main() -> ExitCode {
             view_str = args.get(i).cloned();
         } else if let Some(v) = a.strip_prefix("--view=") {
             view_str = Some(v.to_string());
+        } else if a == "--fresh" {
+            fresh = true;
         } else if file_arg.is_none() && (a == "-" || !a.starts_with('-')) {
             file_arg = Some(a.clone());
         }
@@ -119,6 +127,11 @@ fn main() -> ExitCode {
 
     let initial_view = view_str.as_deref().map(parse_view);
 
+    // Per-file session: remember/restore this file's view by its canonical path.
+    // Only real files get a session (a pipe has no stable identity). An explicit
+    // --view takes precedence over a saved session (handled in tui::run).
+    let session_key = if from_pipe { None } else { path.canonicalize().ok() };
+
     // Size the rayon pool to the file before any parallel work: small files skip
     // the pool overhead, huge files scale up to every core. Must run before the
     // first parallel call (the index scan); build_global is a one-time setup.
@@ -142,7 +155,7 @@ fn main() -> ExitCode {
     eprint!("\r\x1b[2K"); // carriage return + clear line
     let _ = io::stderr().flush();
 
-    let code = match tui::run(index, display_name, initial_view) {
+    let code = match tui::run(index, display_name, initial_view, session_key, !fresh) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("zerch: {e}");

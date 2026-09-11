@@ -6,6 +6,7 @@ zerch \- a less-but-smarter terminal log viewer
 .I logfile
 .RB [ \-\-view
 .IR string ]
+.RB [ \-\-fresh ]
 .SH DESCRIPTION
 .B zerch
 is a terminal log viewer with search, filters, highlights, bookmarks, and
@@ -17,7 +18,12 @@ instantly and searches them in well under a second.
 .BI \-\-view " string"
 Restore a saved view: filters, highlights, bookmarks, revealed ranges, the
 search term, and the selected line, encoded as a single compact, shareable
-token \(em so you can save or hand off an exact view.
+token \(em so you can save or hand off an exact view. Takes precedence over a
+saved session.
+.TP
+.B \-\-fresh
+Open the file clean, ignoring its saved session (see
+.BR SESSIONS ).
 .TP
 .BR \-h ", " \-\-help
 Print a short usage summary and exit.
@@ -93,6 +99,18 @@ Quit (press
 twice, or
 .BR ^C ,
 to exit immediately).
+.SH SESSIONS
+Each file's view \(em filters, highlights, bookmarks, hidden lines, search, and
+the cursor line \(em is saved on exit and restored on the next
+.BI "zerch " logfile ,
+keyed by the file's canonical path, so you resume where you left off. Sessions
+live under
+.I $XDG_STATE_HOME/zerch/sessions/
+(private, 0600). Use
+.B \-\-fresh
+to skip restoring once, or set
+.B ZERCH_NO_SESSION=1
+to disable sessions entirely. Piped input has no session.
 .SH ENVIRONMENT
 .TP
 .B ZERCH_NAIVE_TZ
@@ -109,11 +127,19 @@ Set to
 .B \-
 or empty to disable history persistence. The file is written owner\-readable
 only (0600).
+.TP
+.B ZERCH_NO_SESSION
+When set to a non\-empty value (other than
+.BR 0 ),
+disables per\-file session saving and restoring.
 .SH FILES
 .TP
 .I ~/.local/state/zerch/history
 Persistent input history (unless overridden by
 .BR ZERCH_HISTFILE ).
+.TP
+.I ~/.local/state/zerch/sessions/
+Per\-file saved views (one file per log, named by a hash of its path).
 .SH AUTHOR
 Adi Zaimi.
 .SH LICENSE
