@@ -71,13 +71,32 @@ fn parse_sep(s: &str) -> FieldSep {
     }
 }
 
-/// Parse a "1,2,5" column list into sorted, deduped 1-based indices.
+/// Parse a "1,2,5" column list into sorted, deduped 1-based indices. Each
+/// comma-separated token is either a single number or an inclusive range
+/// "A-B" (expanded to A..=B). Reversed ranges (B < A) are ignored, and a
+/// range is capped at RANGE_CAP entries so a typo like "1-999999" can't blow
+/// up memory. Unparseable tokens are silently dropped.
 fn parse_cols(s: &str) -> Vec<usize> {
-    let mut v: Vec<usize> = s
-        .split(',')
-        .filter_map(|t| t.trim().parse::<usize>().ok())
-        .filter(|&n| n >= 1)
-        .collect();
+    const RANGE_CAP: usize = 4096;
+    let mut v: Vec<usize> = Vec::new();
+    for tok in s.split(',') {
+        let tok = tok.trim();
+        if tok.is_empty() {
+            continue;
+        }
+        // Split on the first '-' to allow "A-B" ranges; a bare number has none.
+        if let Some((a, b)) = tok.split_once('-') {
+            if let (Ok(a), Ok(b)) = (a.trim().parse::<usize>(), b.trim().parse::<usize>()) {
+                if a >= 1 && b >= a {
+                    v.extend((a..=b).take(RANGE_CAP));
+                }
+            }
+        } else if let Ok(n) = tok.parse::<usize>() {
+            if n >= 1 {
+                v.push(n);
+            }
+        }
+    }
     v.sort_unstable();
     v.dedup();
     v
@@ -2334,6 +2353,23 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn parse_cols_handles_ranges() {
+        assert_eq!(parse_cols("1,2,5"), vec![1, 2, 5]);
+        assert_eq!(parse_cols("1-7"), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(parse_cols("1,3-5,8"), vec![1, 3, 4, 5, 8]);
+        // overlaps and duplicates collapse; result stays sorted+deduped
+        assert_eq!(parse_cols("3-5,4-6"), vec![3, 4, 5, 6]);
+        // single-element range
+        assert_eq!(parse_cols("4-4"), vec![4]);
+        // reversed range is ignored; the good token survives
+        assert_eq!(parse_cols("9-2,3"), vec![3]);
+        // whitespace and junk tokens are tolerated
+        assert_eq!(parse_cols(" 2 - 4 , x , 7 "), vec![2, 3, 4, 7]);
+        // a huge range is capped, not expanded to millions of entries
+        assert_eq!(parse_cols("1-999999").len(), 4096);
+    }
 
     fn app_from(lines: &[&str]) -> App {
         static C: AtomicU64 = AtomicU64::new(0);

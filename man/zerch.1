@@ -98,7 +98,11 @@ and
 .B Bookmarks
 fields (press Enter to edit). The listed 1\-based columns, split on the
 separator, are replaced with an ellipsis in the view; the bookmarks field is a
-comma-separated list of line numbers.
+comma-separated list of line numbers. Both the Hide Columns and Bookmarks
+lists accept inclusive ranges, so
+.I 1,3\-5,8
+is the same as
+.IR 1,3,4,5,8 .
 .TP
 .B q ^C
 Quit (press

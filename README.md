@@ -70,13 +70,13 @@ Piped/stdin input has no session (there's no stable file to key on).
 | Search | `/` | search · `n`/`N` next/prev from cursor · `^R` regex · `^A` case · `↑`/`↓` history · `Esc` clear |
 | Highlight | `h` | add a coloured highlight term |
 | Filter | `F` add · `o` toggle AND/OR | reduces the view to matching lines (gaps collapse the rest) |
-| Bookmarks | `B` toggle · `[` / `]` prev/next | bookmarked lines stay visible when filtered; edit the list inline in the `m` menu |
+| Bookmarks | `B` toggle · `[` / `]` prev/next | bookmarked lines stay visible when filtered; edit the list inline in the `m` menu (accepts ranges, e.g. `1,3-5,8`) |
 | Hide | `x` on a line | hide it (collapses to a gap); reveal the gap or menu `X` to undo |
 | Gaps | `Enter`/`+` from top · `-` from bottom | reveal hidden lines a chunk at a time |
 | Expand | `Enter` on a line | JSON view, or a wrapped view if the line doesn't fit |
 | Histogram | `T` show/hide · `t` re-enter | `←/→` move · `a` anchor · `Enter` apply · `c` clear time range |
 | Menu | `m` | toggle/edit/delete filters & highlights; `e` export view string; `g` export grep/awk |
-| Field hiding | in the menu | edit `Separator` and `Hide Columns` (e.g. `1,2,5`) inline (Enter to edit) — chosen columns render as `…` |
+| Field hiding | in the menu | edit `Separator` and `Hide Columns` (e.g. `1,2,5` or `1,3-5,8`) inline (Enter to edit) — chosen columns render as `…` |
 | Other | `?` help · `q` quit (confirm) · `^C` quit now | |
 
 ## Building
@@ -144,7 +144,7 @@ licenses). `Depends:` is derived automatically from the linked libraries.
 
 ```
 cargo install cargo-deb
-cargo deb            # → target/debian/zerch_0.5.0_<arch>.deb
+cargo deb            # → target/debian/zerch_0.5.1_<arch>.deb
 sudo apt install ./target/debian/zerch_*.deb
 ```
 
@@ -155,7 +155,7 @@ A debhelper source package lives in `debian/` (required at the repo root by
 
 ```
 sudo apt install devscripts debhelper cargo rustc
-dpkg-buildpackage -us -uc -b     # → ../zerch_0.5.0_<arch>.deb
+dpkg-buildpackage -us -uc -b     # → ../zerch_0.5.1_<arch>.deb
 ```
 
 `cargo` fetches the crate dependencies during the build, so the build host needs
