@@ -145,6 +145,9 @@ pub struct App {
     // to `Pending` so it recomputes shortly after.
     filter_counts: Vec<Count>,
     highlight_counts: Vec<Count>,
+    /// Numeric prefix being typed in normal mode (e.g. `12` before `→`); consumed
+    /// as the pan distance in columns. `None` when no digits are pending.
+    pending_count: Option<usize>,
 
     confirm_quit: bool,
     pub should_quit: bool,
@@ -200,6 +203,7 @@ impl App {
             menu_sel: 0,
             filter_counts: Vec::new(),
             highlight_counts: Vec::new(),
+            pending_count: None,
             confirm_quit: false,
             should_quit: false,
             suspend: false,
@@ -500,11 +504,13 @@ impl App {
         self.pos = p;
     }
 
-    fn pan(&mut self, dir: i64) {
+    // Pan horizontally by `count` columns, or by half a screen (min 8) when no
+    // numeric prefix was given.
+    fn pan(&mut self, dir: i64, count: Option<usize>) {
         if self.wrap {
             return;
         }
-        let step = (self.width as usize / 2).max(8);
+        let step = count.unwrap_or((self.width as usize / 2).max(8));
         let max_h = self.index.max_line_length().saturating_sub(2);
         self.hscroll = if dir < 0 {
             self.hscroll.saturating_sub(step)
@@ -1484,6 +1490,20 @@ impl App {
     }
 
     fn handle_normal_key(&mut self, key: KeyEvent, ctrl: bool) {
+        // Numeric prefix: digits accumulate into `pending_count` (used as the pan
+        // distance). A bare `0` (nothing pending) keeps its meaning: reset pan.
+        if !ctrl {
+            if let KeyCode::Char(c) = key.code {
+                if c.is_ascii_digit() && !(c == '0' && self.pending_count.is_none()) {
+                    let d = (c as u8 - b'0') as usize;
+                    self.pending_count =
+                        Some(self.pending_count.unwrap_or(0).saturating_mul(10).saturating_add(d));
+                    return;
+                }
+            }
+        }
+        // Any other key consumes (and clears) a pending prefix; only pan uses it.
+        let prefix = self.pending_count.take();
         if ctrl {
             match key.code {
                 KeyCode::Char('f') => self.page_by(1),
@@ -1511,8 +1531,8 @@ impl App {
                 self.mode = Mode::Command;
                 self.reset_input();
             }
-            KeyCode::Left => self.pan(-1),
-            KeyCode::Right => self.pan(1),
+            KeyCode::Left => self.pan(-1, prefix),
+            KeyCode::Right => self.pan(1, prefix),
             KeyCode::Char('0') => self.hscroll = 0,
             KeyCode::Char('w') => {
                 self.wrap = !self.wrap;
@@ -1811,6 +1831,9 @@ impl App {
         if self.hscroll > 0 {
             s.push_str(&format!("col {}  ", self.hscroll));
         }
+        if let Some(n) = self.pending_count {
+            s.push_str(&format!("{n}›  ")); // digits typed, waiting for ←/→
+        }
         if let Some(h) = self.hint {
             s.push_str(&format!(" · {h}"));
         }
@@ -1982,7 +2005,7 @@ fn help_lines() -> Vec<Line<'static>> {
     const ROWS: &[&str] = &[
         "Movement   j/k or ↑/↓ move · f/b (or space/PgDn, ^F/^B) page · g/G top/bottom",
         "           H/M/L cursor to screen top/middle/bottom · :N go to line N · :$ last · :q quit",
-        "Long lines ←/→ pan · 0 reset pan · w toggle in-place wrap",
+        "Long lines ←/→ pan (half screen) · N←/→ pan N columns · 0 reset pan · w in-place wrap",
         "Search     / search · n/N next/prev (from cursor) · ^R regex · ^A case · ↑/↓ history · Esc clear",
         "Highlight  h add a coloured highlight term",
         "Filter     F add filter · o toggle AND/OR",
@@ -2228,6 +2251,40 @@ mod tests {
         assert!(app.pos_of_line(4).is_none()); // line 4 filtered out
         app.run_command("4");
         assert_eq!(app.current_line(), Some(4)); // revealed and jumped to
+    }
+
+    #[test]
+    fn count_prefix_pans_by_columns() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = app_from(&[
+            "a very long line with plenty of characters to allow horizontal panning here",
+        ]);
+        app.width = 20;
+        let press = |app: &mut App, c: char| {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+        };
+        let right = |app: &mut App| app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+
+        press(&mut app, '1');
+        assert_eq!(app.pending_count, Some(1));
+        right(&mut app);
+        assert_eq!(app.hscroll, 1); // panned exactly one column
+        assert_eq!(app.pending_count, None); // prefix consumed
+
+        press(&mut app, '1');
+        press(&mut app, '2');
+        assert_eq!(app.pending_count, Some(12));
+        right(&mut app);
+        assert_eq!(app.hscroll, 13);
+
+        press(&mut app, '0'); // bare 0 resets pan, not a count digit
+        assert_eq!(app.pending_count, None);
+        assert_eq!(app.hscroll, 0);
+
+        press(&mut app, '5'); // a pending prefix is cleared by a non-pan key
+        assert_eq!(app.pending_count, Some(5));
+        press(&mut app, 'j');
+        assert_eq!(app.pending_count, None);
     }
 
     #[test]

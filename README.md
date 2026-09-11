@@ -53,7 +53,7 @@ persistence entirely. All history I/O is best-effort and never blocks the viewer
 | | `g` / `G` | top / bottom |
 | | `H` / `M` / `L` | cursor to screen top / middle / bottom (no scroll) |
 | | `:N` `Enter` · `:$` · `:q` | go to line N · last line · quit |
-| Long lines | `←` / `→` | pan · `0` reset pan · `w` toggle in-place wrap |
+| Long lines | `←` / `→` | pan half a screen · `N`+`←`/`→` pan N columns · `0` reset pan · `w` toggle in-place wrap |
 | Search | `/` | search · `n`/`N` next/prev from cursor · `^R` regex · `^A` case · `↑`/`↓` history · `Esc` clear |
 | Highlight | `h` | add a coloured highlight term |
 | Filter | `F` add · `o` toggle AND/OR | reduces the view to matching lines (gaps collapse the rest) |
