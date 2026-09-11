@@ -54,6 +54,7 @@ pub struct ViewState {
     pub hidden: Vec<usize>,  // explicitly hidden line numbers (the `x` command)
     pub hide_cols: String,   // 1-based column list to blank out, e.g. "1,2,5"
     pub col_sep: String,     // column separator (empty = default comma)
+    pub syntax: bool,        // whole-line syntax colouring toggle
     pub search: String,
     pub search_regex: bool,
     pub search_case: bool,
@@ -169,6 +170,10 @@ pub fn serialize_view(v: &ViewState) -> String {
         }
     }
 
+    if v.syntax {
+        p.append_pair("syntax", "1");
+    }
+
     if let Some(sel) = v.selected {
         p.append_pair("selected", &sel.to_string());
     }
@@ -235,6 +240,7 @@ pub fn parse_view(query: &str) -> ViewState {
         hidden: parse_range_spec(&get("hidden")),
         hide_cols: get("hidecols"),
         col_sep: get("colsep"),
+        syntax: get("syntax") == "1",
         search: get("search"),
         search_regex: get("srx") == "1",
         search_case: get("scase") == "1",
@@ -345,6 +351,15 @@ mod tests {
         assert_eq!(back.bookmarks, vec![4, 7]);
         assert_eq!(back.visible, vec![3, 4, 5, 8]);
         assert_eq!(back.hidden, vec![10, 11, 12, 20]);
+    }
+
+    #[test]
+    fn syntax_flag_round_trips() {
+        assert!(!parse_view(&serialize_view(&base())).syntax); // off by default, not emitted
+        let v = ViewState { syntax: true, ..base() };
+        let s = serialize_view(&v);
+        assert!(s.contains("syntax=1"));
+        assert!(parse_view(&s).syntax);
     }
 
     #[test]

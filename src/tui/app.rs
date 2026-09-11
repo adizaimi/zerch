@@ -270,6 +270,7 @@ impl App {
         self.hidden_lines = v.hidden.into_iter().collect();
         self.hide_cols_text = v.hide_cols;
         self.col_sep_text = if v.col_sep.is_empty() { ",".to_string() } else { v.col_sep };
+        self.syntax_color = v.syntax;
         self.search_regex = v.search_regex;
         self.search_case = v.search_case;
         if !v.search.is_empty() {
@@ -1277,6 +1278,7 @@ impl App {
             hide_cols: self.hide_cols_text.clone(),
             // Emit the separator only when it differs from the default comma.
             col_sep: if self.col_sep_text == "," { String::new() } else { self.col_sep_text.clone() },
+            syntax: self.syntax_color,
         }
     }
 
