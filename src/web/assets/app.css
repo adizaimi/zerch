@@ -324,7 +324,18 @@ kbd {
   left: 0;
   z-index: 1;
 }
-.line-content { flex: 1; padding: 0 8px; }
+.line-content { flex: 1; padding: 0 8px; min-width: 0; }
+.line-content.wrapped { white-space: pre-wrap; word-break: break-all; }
+.line-json {
+  margin: 0; padding: 2px 0; font-family: "Courier New", Courier, monospace;
+  font-size: 13px; line-height: 18px; white-space: pre-wrap; word-break: break-word;
+}
+.line-json .jk-key { color: #8e44ad; }
+.line-json .jk-str { color: #16825d; }
+.line-json .jk-num { color: #1c75d8; }
+.line-json .jk-bool { color: #c0392b; }
+.line-json .jk-null { color: #7f8c8d; }
+.line-actions .act.on { border-color: #3498db; color: #3498db; }
 
 /* highlight lanes (background); highlight color is inline. selected-text (teal)
    is added client-side in a later commit. */

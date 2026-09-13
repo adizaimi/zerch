@@ -66,6 +66,11 @@
     regexOn: false,
     counts: { filters: [], highlights: [] },
     showMinimap: true,
+    jsonSet: new Set(), // line numbers rendered as pretty JSON
+    wrapSet: new Set(), // line numbers rendered wrapped
+    heights: new Map(), // lineNumber -> px (decorated rows only)
+    decoPos: [], // sorted [[displayedPos, extraPx]] for decorated lines in view
+    decoExtra: 0, // Σ extraPx
   };
   const minimap = $("minimap");
   $("total-lines").textContent = state.fileLines.toLocaleString() + " lines";
@@ -73,16 +78,61 @@
   const gutterW = Math.max(3, String(state.fileLines).length) * 8 + 28;
   document.documentElement.style.setProperty("--gutter-width", gutterW + "px");
 
-  // Content width for horizontal scrolling of long lines: gutter + the longest line
-  // measured at the real font. Rows stretch to this width; the gutter stays sticky.
-  (function setContentWidth() {
-    const cvs = document.createElement("canvas");
-    const cx = cvs.getContext("2d");
+  // Monospace char width at the real font — for content width and wrap math.
+  const CHAR_W = (function () {
+    const cx = document.createElement("canvas").getContext("2d");
     cx.font = '13px "Courier New", Courier, monospace';
-    const charW = cx.measureText("0").width || 7.8;
-    const w = gutterW + Math.ceil(state.maxlen * charW) + 40;
+    return cx.measureText("0").width || 7.8;
+  })();
+
+  // Content width for horizontal scrolling of long lines: gutter + the longest line.
+  (function setContentWidth() {
+    const w = gutterW + Math.ceil(state.maxlen * CHAR_W) + 40;
     document.documentElement.style.setProperty("--content-width", w + "px");
   })();
+
+  // ---- inline expansion: JSON pretty-print + wrap ------------------------
+  const JSON_LH = 18; // px per pretty-JSON line
+  const esc = (s) =>
+    s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  function tryPrettyJson(text) {
+    const t = text.trim();
+    if (!(t.startsWith("{") || t.startsWith("["))) return null;
+    try {
+      return JSON.stringify(JSON.parse(t), null, 2);
+    } catch (_e) {
+      return null;
+    }
+  }
+  function colorJson(pretty) {
+    const re = /("(?:\\.|[^"\\])*"\s*:?)|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
+    let out = "";
+    let last = 0;
+    let m;
+    while ((m = re.exec(pretty))) {
+      out += esc(pretty.slice(last, m.index));
+      if (m[1]) {
+        const isKey = m[1].trimEnd().endsWith(":");
+        out += '<span class="jk-' + (isKey ? "key" : "str") + '">' + esc(m[1]) + "</span>";
+      } else if (m[2]) {
+        out += '<span class="jk-' + (m[2] === "null" ? "null" : "bool") + '">' + esc(m[2]) + "</span>";
+      } else if (m[3]) {
+        out += '<span class="jk-num">' + esc(m[3]) + "</span>";
+      }
+      last = re.lastIndex;
+    }
+    out += esc(pretty.slice(last));
+    return out;
+  }
+  // Deterministic height for a decorated line (no measurement / relayout loop).
+  function jsonHeight(pretty) {
+    return pretty.split("\n").length * JSON_LH + 10;
+  }
+  function wrapHeight(text) {
+    const avail = Math.max(100, scroller.clientWidth - gutterW - 16);
+    const rows = Math.max(1, Math.ceil((text.length * CHAR_W) / avail));
+    return rows * ROW_H + 4;
+  }
 
   // ---- view token helpers -----------------------------------------------
   const tokenParams = () => new URLSearchParams(state.view);
@@ -99,11 +149,94 @@
 
   function layout() {
     viewportH = scroller.clientHeight;
-    const virtualH = state.total * ROW_H;
+    const virtualH = state.total * ROW_H + state.decoExtra;
     domH = Math.min(virtualH, SAFE_MAX);
     scale =
       virtualH > domH && domH > viewportH ? (virtualH - viewportH) / (domH - viewportH) : 1;
     spacer.style.height = Math.max(domH, 1) + "px";
+  }
+
+  // ---- variable-height offset model (expanded/wrapped rows are taller) ----
+  const extraBefore = (pos) => {
+    let s = 0;
+    for (const [p, e] of state.decoPos) {
+      if (p < pos) s += e;
+      else break;
+    }
+    return s;
+  };
+  const virtualYof = (pos) => pos * ROW_H + extraBefore(pos);
+  function posAtVirtualY(vy) {
+    let lo = 0;
+    let hi = state.total;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (virtualYof(mid) <= vy) lo = mid + 1;
+      else hi = mid;
+    }
+    return Math.max(0, lo - 1);
+  }
+  const rowHeightForLine = (n) =>
+    (state.jsonSet.has(n) || state.wrapSet.has(n)) ? state.heights.get(n) || ROW_H : ROW_H;
+
+  // Resolve displayed positions of decorated lines and recompute extras, then relayout.
+  function rebuildDeco() {
+    const lines = [...new Set([...state.jsonSet, ...state.wrapSet])];
+    if (!lines.length) {
+      state.decoPos = [];
+      state.decoExtra = 0;
+      layout();
+      painted = { from: -1, to: -1 };
+      refresh(true);
+      return;
+    }
+    fetch("/positions?view=" + encodeURIComponent(state.view) + "&lines=" + lines.join(","))
+      .then((r) => r.json())
+      .then((d) => {
+        const m = d.positions || {};
+        const arr = [];
+        lines.forEach((l) => {
+          if (m[l] != null) arr.push([m[l], rowHeightForLine(l) - ROW_H]);
+        });
+        arr.sort((a, b) => a[0] - b[0]);
+        state.decoPos = arr;
+        state.decoExtra = arr.reduce((s, e) => s + e[1], 0);
+        layout();
+        painted = { from: -1, to: -1 };
+        refresh(true);
+        drawMinimap();
+      })
+      .catch(() => {});
+  }
+
+  const stripHtml = (html) => {
+    const d = document.createElement("div");
+    d.innerHTML = html;
+    return d.textContent || "";
+  };
+  function toggleJson(n, text) {
+    if (state.jsonSet.has(n)) {
+      state.jsonSet.delete(n);
+      state.heights.delete(n);
+    } else {
+      const pretty = tryPrettyJson(text);
+      if (!pretty) return;
+      state.jsonSet.add(n);
+      state.wrapSet.delete(n);
+      state.heights.set(n, jsonHeight(pretty));
+    }
+    rebuildDeco();
+  }
+  function toggleWrap(n, text) {
+    if (state.wrapSet.has(n)) {
+      state.wrapSet.delete(n);
+      state.heights.delete(n);
+    } else {
+      state.wrapSet.add(n);
+      state.jsonSet.delete(n);
+      state.heights.set(n, wrapHeight(text));
+    }
+    rebuildDeco();
   }
 
   function makeRow(item, index, topPx, isCurrent, bmSet, selLine) {
@@ -164,13 +297,42 @@
       else toggleBookmark(item.n);
     });
 
+    const raw = stripHtml(item.html); // raw line text (for JSON detect / wrap / toggles)
+    const isJson = state.jsonSet.has(item.n);
+    const isWrap = state.wrapSet.has(item.n);
+    if (isJson || isWrap) row.style.height = (state.heights.get(item.n) || ROW_H) + "px";
+
     const content = document.createElement("div");
-    content.className = "line-content";
-    content.innerHTML = item.html; // server-rendered + server-escaped
-    if (isCurrent) content.querySelectorAll(".s").forEach((s) => s.classList.add("s-cur"));
+    content.className = "line-content" + (isWrap ? " wrapped" : "");
+    if (isJson) {
+      const pretty = tryPrettyJson(raw);
+      const pre = document.createElement("pre");
+      pre.className = "line-json";
+      pre.innerHTML = pretty ? colorJson(pretty) : esc(raw);
+      content.appendChild(pre);
+    } else {
+      content.innerHTML = item.html; // server-rendered + server-escaped
+      if (isCurrent) content.querySelectorAll(".s").forEach((s) => s.classList.add("s-cur"));
+    }
 
     const actions = document.createElement("span");
     actions.className = "line-actions";
+    if (tryPrettyJson(raw)) {
+      const jb = document.createElement("button");
+      jb.className = "act" + (isJson ? " on" : "");
+      jb.textContent = "{ }";
+      jb.title = "Pretty-print JSON";
+      jb.addEventListener("click", () => toggleJson(item.n, raw));
+      actions.appendChild(jb);
+    }
+    if (raw.length > 100) {
+      const wb = document.createElement("button");
+      wb.className = "act" + (isWrap ? " on" : "");
+      wb.textContent = isWrap ? "▲" : "⋯";
+      wb.title = "Wrap long line";
+      wb.addEventListener("click", () => toggleWrap(item.n, raw));
+      actions.appendChild(wb);
+    }
     const hideBtn = document.createElement("button");
     hideBtn.className = "act";
     hideBtn.textContent = "×";
@@ -208,7 +370,7 @@
     let curRow = null;
     for (let k = 0; k < rows.length; k++) {
       const index = from + k;
-      const topPx = domTop + (index * ROW_H - virtualTop);
+      const topPx = domTop + (virtualYof(index) - virtualTop);
       const node = makeRow(rows[k], index, topPx, index === curPos, bmSet, selLine);
       if (index === curPos) curRow = node;
       frag.appendChild(node);
