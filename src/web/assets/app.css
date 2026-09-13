@@ -3,6 +3,9 @@
    New 13px. This file grows as the UI lands. */
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
+/* The `hidden` attribute must win over components that set an explicit display
+   (.overlay/.histogram/.match-counter/… use flex, which otherwise overrides it). */
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 
 body {
