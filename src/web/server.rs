@@ -72,6 +72,10 @@ fn handle(state: &State, req: Request) {
             let (status, body) = handlers::levels(state);
             respond(req, status, "application/json; charset=utf-8", body);
         }
+        "/histogram" => {
+            let (status, body) = handlers::histogram(state, &parse_query(query));
+            respond(req, status, "application/json; charset=utf-8", body);
+        }
         _ => respond(req, 404, "text/plain; charset=utf-8", "not found\n".to_string()),
     }
 }
@@ -98,6 +102,7 @@ fn index_page(state: &State, query: &str) -> String {
         "file": state.file_name,
         "total": state.index.total_lines(),
         "maxlen": state.index.max_line_length(),
+        "hastime": state.index.time_bounds().is_some(),
         "view": view,
     })
     .to_string()

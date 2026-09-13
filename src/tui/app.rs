@@ -1314,6 +1314,9 @@ impl App {
             // The TUI has no level-chip UI; the web sets this. Kept default so the
             // token format stays single-sourced in view::state.
             levels: Vec::new(),
+            // The TUI's histogram time range is runtime-only today; the web persists
+            // its own in the token. Kept default here to avoid changing TUI behaviour.
+            time_range: None,
         }
     }
 

@@ -211,8 +211,21 @@ kbd {
 }
 .plist .empty { color: #bdc3c7; font-size: 12px; font-family: -apple-system, sans-serif; }
 
+/* ---- time histogram ----------------------------------------------------- */
+.histogram {
+  height: 72px; flex-shrink: 0; background: #1f2d3a; color: #8aa0b2;
+  padding: 6px 10px; display: flex; flex-direction: column; gap: 4px;
+}
+.th-bars { flex: 1; display: flex; align-items: flex-end; gap: 1px; cursor: crosshair; position: relative; }
+.th-bar { flex: 1; background: #3d6a8f; min-height: 1px; }
+.th-sel { position: absolute; top: 0; bottom: 0; background: rgba(108,182,255,0.18); border-left: 1px solid #6cb6ff; border-right: 1px solid #6cb6ff; pointer-events: none; }
+.th-axis { display: flex; justify-content: space-between; font-size: 11px; font-family: "Courier New", monospace; }
+.th-center { color: #6cb6ff; }
+.th-clear { background: none; border: none; color: #6cb6ff; cursor: pointer; font-size: 12px; }
+.th-hint { font-style: italic; color: #6b7c8c; }
+
 /* ---- log viewer / virtual list ----------------------------------------- */
-.main-content { flex: 1; overflow: hidden; display: flex; }
+.main-content { flex: 1; overflow: hidden; display: flex; min-height: 0; }
 .log-viewer {
   flex: 1;
   position: relative;

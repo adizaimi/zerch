@@ -58,6 +58,7 @@ fn displayed_key(view: &ViewState) -> String {
         visible: view.visible.clone(),
         hidden: view.hidden.clone(),
         levels: view.levels.clone(),
+        time_range: view.time_range,
         ..ViewState::default()
     };
     serialize_view(&reduced)
@@ -79,7 +80,7 @@ pub fn displayed_for(state: &State, _token: &str, view: &ViewState) -> Arc<Displ
 
     let total = state.index.total_lines();
     let stack: Vec<SearchTerm> = build_stack(view);
-    let has_filter = !stack.is_empty() || !view.levels.is_empty();
+    let has_filter = !stack.is_empty() || !view.levels.is_empty() || view.time_range.is_some();
     let displayed = if !has_filter && view.hidden.is_empty() {
         // Unfiltered and nothing hidden → every line, in order, no gaps.
         Displayed::All(total)
@@ -87,7 +88,7 @@ pub fn displayed_for(state: &State, _token: &str, view: &ViewState) -> Arc<Displ
         let matching: Vec<usize> = if !has_filter {
             (1..=total).collect() // unfiltered base; hidden lines carve gaps
         } else {
-            let scope = Scope { time_range: None, levels: view.levels.clone() };
+            let scope = Scope { time_range: view.time_range, levels: view.levels.clone() };
             search(&state.index, &stack, &scope)
                 .map(|r| r.matching_lines)
                 .unwrap_or_default()
@@ -303,6 +304,29 @@ pub fn counts(state: &State, q: &HashMap<String, String>) -> (u16, String) {
         .collect();
     let body = serde_json::json!({ "filters": filters, "highlights": highlights });
     (200, body.to_string())
+}
+
+/// `GET /histogram?buckets=N` — time histogram for the strip: per-bucket count and
+/// most-severe level (matching the TUI). `{}` when the file has no timestamps.
+pub fn histogram(state: &State, q: &HashMap<String, String>) -> (u16, String) {
+    let buckets = q
+        .get("buckets")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(160)
+        .clamp(1, 2000);
+    match state.index.histogram(buckets) {
+        Some(h) => {
+            let body = serde_json::json!({
+                "min": h.min_ts,
+                "max": h.max_ts,
+                "bucketMs": h.bucket_ms,
+                "counts": h.counts,
+                "levels": h.max_level,
+            });
+            (200, body.to_string())
+        }
+        None => (200, "{}".to_string()),
+    }
 }
 
 /// `GET /levels` — whole-file line count per canonical level code 0..=6 (computed

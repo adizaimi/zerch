@@ -937,6 +937,135 @@
     });
   }
 
+  // ---- time histogram ----------------------------------------------------
+  const histogram = $("histogram");
+  const thBars = $("th-bars");
+  let histData = null;
+  let brush = null;
+  let brushEl = null;
+
+  const fmtTime = (ms) => {
+    try {
+      return new Date(ms).toLocaleString();
+    } catch (_e) {
+      return String(ms);
+    }
+  };
+  const timeRange = () => {
+    const v = tokenParams().get("tr");
+    if (!v) return null;
+    const [a, b] = v.split(",").map(Number);
+    return isNaN(a) || isNaN(b) ? null : [a, b];
+  };
+  function setTimeRange(from, to) {
+    const p = tokenParams();
+    if (from == null) p.delete("tr");
+    else p.set("tr", from + "," + to);
+    commitToken(p);
+    painted = { from: -1, to: -1 };
+    refresh(true);
+    drawHistogram();
+    resolveMarkers();
+    if (tokenParams().get("search") || "") fetchMatches(false);
+  }
+  function fetchHistogram() {
+    fetch("/histogram?buckets=160")
+      .then((r) => r.json())
+      .then((d) => {
+        histData = d && d.counts ? d : null;
+        drawHistogram();
+      })
+      .catch(() => {});
+  }
+  function drawHistogram() {
+    if (histogram.hidden || !histData) return;
+    const { counts, levels: lv, min, max } = histData;
+    const peak = Math.max(1, ...counts);
+    thBars.textContent = "";
+    for (let i = 0; i < counts.length; i++) {
+      const bar = document.createElement("div");
+      bar.className = "th-bar";
+      bar.style.height = Math.max(1, (counts[i] / peak) * 100) + "%";
+      const code = lv[i] || 0;
+      if (code > 0) bar.style.background = LEVEL_COLORS[code];
+      bar.title = fmtTime(min + ((max - min) * i) / counts.length) + " — " + counts[i];
+      thBars.appendChild(bar);
+    }
+    brushEl = null;
+    $("th-min").textContent = fmtTime(min);
+    $("th-max").textContent = fmtTime(max);
+    const tr = timeRange();
+    const center = $("th-center");
+    center.textContent = "";
+    if (tr) {
+      const label = document.createElement("span");
+      label.className = "th-range";
+      label.textContent = fmtTime(tr[0]) + " – " + fmtTime(tr[1]) + " ";
+      const clear = document.createElement("button");
+      clear.className = "th-clear";
+      clear.textContent = "×";
+      clear.title = "Clear time range";
+      clear.addEventListener("click", () => setTimeRange(null));
+      center.appendChild(label);
+      center.appendChild(clear);
+    } else {
+      const hint = document.createElement("span");
+      hint.className = "th-hint";
+      hint.textContent = "drag to filter by time";
+      center.appendChild(hint);
+    }
+  }
+  function drawBrushOverlay(x0, x1) {
+    if (!brushEl) {
+      brushEl = document.createElement("div");
+      brushEl.className = "th-sel";
+      thBars.appendChild(brushEl);
+    }
+    const lo = Math.min(x0, x1);
+    brushEl.style.left = lo + "px";
+    brushEl.style.width = Math.abs(x1 - x0) + "px";
+  }
+  thBars.addEventListener("mousedown", (e) => {
+    const rect = thBars.getBoundingClientRect();
+    brush = { x0: e.clientX - rect.left, rect };
+    drawBrushOverlay(brush.x0, brush.x0);
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!brush) return;
+    drawBrushOverlay(brush.x0, e.clientX - brush.rect.left);
+  });
+  window.addEventListener("mouseup", (e) => {
+    if (!brush) return;
+    const x = e.clientX - brush.rect.left;
+    const w = brush.rect.width;
+    let a = Math.min(brush.x0, x) / w;
+    let b = Math.max(brush.x0, x) / w;
+    brush = null;
+    if (brushEl) {
+      brushEl.remove();
+      brushEl = null;
+    }
+    if (!histData || b - a < 0.005) {
+      if (timeRange()) setTimeRange(null); // a click clears any range
+      return;
+    }
+    a = Math.max(0, a);
+    b = Math.min(1, b);
+    const span = histData.max - histData.min;
+    setTimeRange(Math.round(histData.min + span * a), Math.round(histData.min + span * b));
+  });
+  function toggleHistogram(on) {
+    histogram.hidden = !on;
+    try {
+      localStorage.setItem("zerch-histogram", on ? "1" : "0");
+    } catch (_e) {}
+    if (on) fetchHistogram();
+    layout();
+    refresh(true);
+    drawMinimap();
+  }
+
   // ---- menu, help overlay, display settings ------------------------------
   const menu = $("menu");
   const helpOverlay = $("help-overlay");
@@ -997,6 +1126,9 @@
       localStorage.setItem("zerch-minimap", this.checked ? "1" : "0");
     } catch (_e) {}
     drawMinimap();
+  });
+  $("opt-histogram").addEventListener("change", function () {
+    toggleHistogram(this.checked);
   });
 
   // ---- events ------------------------------------------------------------
@@ -1133,6 +1265,22 @@
         $("opt-minimap").checked = false;
       }
     } catch (_e) {}
+
+    // Time histogram: only offered when the file has timestamps. Shown if the pref
+    // is on, or if the seed view already carries a time range (e.g. a shared link).
+    if (boot.hastime) {
+      $("opt-histogram-wrap").hidden = false;
+      let showHist = false;
+      try {
+        showHist = localStorage.getItem("zerch-histogram") === "1";
+      } catch (_e) {}
+      if (timeRange()) showHist = true;
+      if (showHist) {
+        $("opt-histogram").checked = true;
+        histogram.hidden = false;
+        fetchHistogram();
+      }
+    }
 
     renderPanel();
     fetchCounts();

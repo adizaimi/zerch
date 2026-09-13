@@ -56,6 +56,7 @@ pub struct ViewState {
     pub col_sep: String,     // column separator (empty = default comma)
     pub syntax: bool,        // whole-line syntax colouring toggle
     pub levels: Vec<u8>,     // restrict to these canonical level codes (empty = all)
+    pub time_range: Option<(i64, i64)>, // inclusive epoch-ms [from, to] (histogram brush)
     pub search: String,
     pub search_regex: bool,
     pub search_case: bool,
@@ -182,6 +183,10 @@ pub fn serialize_view(v: &ViewState) -> String {
         p.append_pair("levels", &lv.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(","));
     }
 
+    if let Some((a, b)) = v.time_range {
+        p.append_pair("tr", &format!("{a},{b}"));
+    }
+
     if let Some(sel) = v.selected {
         p.append_pair("selected", &sel.to_string());
     }
@@ -254,6 +259,13 @@ pub fn parse_view(query: &str) -> ViewState {
             .filter_map(|s| s.parse::<u8>().ok())
             .filter(|&n| n <= 6)
             .collect(),
+        time_range: {
+            let tr = list("tr");
+            match (tr.first().and_then(|s| s.parse::<i64>().ok()), tr.get(1).and_then(|s| s.parse::<i64>().ok())) {
+                (Some(a), Some(b)) if a <= b => Some((a, b)),
+                _ => None,
+            }
+        },
         search: get("search"),
         search_regex: get("srx") == "1",
         search_case: get("scase") == "1",
