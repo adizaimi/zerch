@@ -69,6 +69,62 @@ body {
 .btn-filter:hover { background: #229954; }
 .btn-highlight { background: #9b59b6; }
 .btn-highlight:hover { background: #8e44ad; }
+.btn-menu { background: #34495e; font-weight: 700; }
+.btn-menu:hover { background: #3d5a73; }
+
+/* ⋮ menu */
+.menu-wrap { position: relative; }
+.menu {
+  position: absolute; right: 0; top: 100%; margin-top: 4px; z-index: 10;
+  background: #2c3e50; border-radius: 4px; min-width: 200px; padding: 4px 0;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+.menu-item {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: #ecf0f1; padding: 8px 14px; cursor: pointer; font-size: 13px;
+}
+.menu-item:hover { background: #34495e; }
+
+/* modal overlay (help) */
+.overlay {
+  position: fixed; inset: 0; z-index: 100; display: flex;
+  align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.5);
+}
+.overlay-box {
+  background: #fff; border-radius: 6px; max-width: 520px; width: 90%;
+  max-height: 80vh; overflow: auto; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+}
+.overlay-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; background: #2c3e50; color: #fff; border-radius: 6px 6px 0 0;
+}
+.overlay-head h2 { font-size: 15px; }
+.overlay-close { background: none; border: none; color: #fff; font-size: 20px; cursor: pointer; }
+.overlay-body { padding: 12px 16px; }
+.help-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.help-table td { padding: 4px 8px; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
+.help-table td:first-child { white-space: nowrap; color: #2c3e50; width: 40%; }
+kbd {
+  font-family: "Courier New", monospace; font-size: 12px; background: #ecf0f1;
+  border: 1px solid #cfd8dc; border-radius: 3px; padding: 1px 5px;
+}
+
+/* settings */
+.settings-section { flex: 0 0 auto; overflow: visible; }
+.opt { display: block; font-size: 12px; color: #2c3e50; margin: 4px 0; cursor: pointer; }
+.opt input { vertical-align: middle; margin-right: 6px; }
+
+/* per-term count badge */
+.prow .count { color: #7f8c8d; font-variant-numeric: tabular-nums; font-size: 11px; min-width: 30px; text-align: right; }
+.prow .count.err { color: #e74c3c; }
+
+/* transient toast (e.g. "Copied!") */
+.flash {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  background: #2c3e50; color: #fff; padding: 8px 16px; border-radius: 4px;
+  font-size: 13px; z-index: 200; max-width: 80%; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
 
 /* ---- right panel -------------------------------------------------------- */
 .right-panel {
@@ -184,6 +240,7 @@ body {
   white-space: pre;
 }
 .line-row.zebra { background: #f9f9f9; }
+.no-zebra .line-row.zebra { background: #fff; }
 .line-row.bookmarked { background: #fff9e6; }
 .line-number { position: relative; cursor: pointer; }
 .line-row.bookmarked .line-number { background: #ffe4b3; color: #d68910; }

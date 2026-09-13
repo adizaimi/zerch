@@ -56,6 +56,14 @@ fn handle(state: &State, req: Request) {
             let (status, body) = handlers::goto(state, &parse_query(query));
             respond(req, status, "application/json; charset=utf-8", body);
         }
+        "/counts" => {
+            let (status, body) = handlers::counts(state, &parse_query(query));
+            respond(req, status, "application/json; charset=utf-8", body);
+        }
+        "/shell" => {
+            let (status, body) = handlers::shell(state, &parse_query(query));
+            respond(req, status, "application/json; charset=utf-8", body);
+        }
         _ => respond(req, 404, "text/plain; charset=utf-8", "not found\n".to_string()),
     }
 }

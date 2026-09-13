@@ -31,6 +31,13 @@
         <button id="search-btn" class="btn btn-search">Search</button>
         <button id="filter-btn" class="btn btn-filter" title="Add current term as a filter">Filter</button>
         <button id="highlight-btn" class="btn btn-highlight" title="Add current term as a highlight">Highlight</button>
+        <div class="menu-wrap">
+          <button id="menu-btn" class="btn btn-menu" title="Menu">⋮</button>
+          <div id="menu" class="menu" hidden>
+            <button class="menu-item" id="menu-shell">Copy as shell command</button>
+            <button class="menu-item" id="menu-help">Keyboard shortcuts</button>
+          </div>
+        </div>
         <span id="total-lines" class="muted"></span>
       </div>
     </header>
@@ -58,6 +65,13 @@
             </div>
             <div id="highlight-list" class="plist"></div>
           </section>
+          <section class="panel-section settings-section">
+            <div class="section-head">
+              <span class="section-title">Display</span>
+            </div>
+            <label class="opt"><input type="checkbox" id="opt-zebra" checked /> Zebra stripes</label>
+            <label class="opt"><input type="checkbox" id="opt-minimap" checked /> Minimap</label>
+          </section>
           <section class="panel-section">
             <div class="section-head">
               <span class="section-title">Bookmarks &amp; ranges</span>
@@ -72,6 +86,30 @@
         </div>
       </aside>
     </main>
+    <div id="help-overlay" class="overlay" hidden>
+      <div class="overlay-box">
+        <div class="overlay-head">
+          <h2>Keyboard &amp; mouse</h2>
+          <button id="help-close" class="overlay-close" title="Close">×</button>
+        </div>
+        <div class="overlay-body">
+          <table class="help-table">
+            <tr><td><kbd>/</kbd></td><td>focus the search box</td></tr>
+            <tr><td><kbd>Enter</kbd></td><td>run search (in the box)</td></tr>
+            <tr><td><kbd>n</kbd> / <kbd>N</kbd></td><td>next / previous match</td></tr>
+            <tr><td><kbd>[</kbd> / <kbd>]</kbd></td><td>previous / next bookmark</td></tr>
+            <tr><td><kbd>g</kbd> / <kbd>G</kbd></td><td>jump to top / bottom</td></tr>
+            <tr><td><kbd>?</kbd></td><td>toggle this help</td></tr>
+            <tr><td><kbd>Esc</kbd></td><td>clear search · close this help</td></tr>
+            <tr><td>click line #</td><td>toggle bookmark</td></tr>
+            <tr><td>shift-click line #</td><td>reveal ±5 lines of context</td></tr>
+            <tr><td>double-click a line</td><td>select / anchor it</td></tr>
+            <tr><td>select text</td><td>teal-highlight it across rows</td></tr>
+            <tr><td>hover a line → <b>×</b></td><td>hide the line</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
   </div>
   <script src="app.js"></script>
 </body>

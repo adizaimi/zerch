@@ -55,6 +55,8 @@
     bookmarkPos: [],
     selectedText: "",
     regexOn: false,
+    counts: { filters: [], highlights: [] },
+    showMinimap: true,
   };
   const minimap = $("minimap");
   $("total-lines").textContent = state.fileLines.toLocaleString() + " lines";
@@ -243,6 +245,7 @@
     }
   }
   function drawMinimap() {
+    if (!state.showMinimap) return;
     const rect = minimap.getBoundingClientRect();
     const W = rect.width;
     const H = rect.height;
@@ -441,6 +444,7 @@
     painted = { from: -1, to: -1 };
     refresh(true);
     renderPanel();
+    fetchCounts();
     if (displayedChanged && (tokenParams().get("search") || "")) fetchMatches(false);
   }
 
@@ -450,6 +454,21 @@
     b.textContent = label;
     b.addEventListener("click", onClick);
     return b;
+  }
+  function countBadge(val) {
+    const c = document.createElement("span");
+    c.className = "count" + (val === -1 ? " err" : "");
+    c.textContent = val === undefined || val === null ? "" : val === -1 ? "!" : val.toLocaleString();
+    return c;
+  }
+  function fetchCounts() {
+    fetch("/counts?view=" + encodeURIComponent(state.view))
+      .then((r) => r.json())
+      .then((d) => {
+        state.counts = d;
+        renderPanel();
+      })
+      .catch(() => {});
   }
 
   function renderPanel() {
@@ -484,6 +503,7 @@
       row.appendChild(tglBtn("Aa", f.case, "case", () => editLists((fs) => (fs[i].case = !fs[i].case), true)));
       row.appendChild(tglBtn(".*", f.regex, "rx", () => editLists((fs) => (fs[i].regex = !fs[i].regex), true)));
       row.appendChild(tglBtn("≠", f.negate, "neg", () => editLists((fs) => (fs[i].negate = !fs[i].negate), true)));
+      row.appendChild(countBadge(state.counts.filters[i]));
       const rm = document.createElement("button");
       rm.className = "rm";
       rm.textContent = "×";
@@ -518,6 +538,7 @@
       row.appendChild(term);
       row.appendChild(tglBtn("Aa", h.case, "case", () => editLists((_f, hs) => (hs[i].case = !hs[i].case), false)));
       row.appendChild(tglBtn(".*", h.regex, "rx", () => editLists((_f, hs) => (hs[i].regex = !hs[i].regex), false)));
+      row.appendChild(countBadge(state.counts.highlights[i]));
       const rm = document.createElement("button");
       rm.className = "rm";
       rm.textContent = "×";
@@ -704,6 +725,68 @@
     }
   }
 
+  // ---- menu, help overlay, display settings ------------------------------
+  const menu = $("menu");
+  const helpOverlay = $("help-overlay");
+  function closeMenu() {
+    menu.hidden = true;
+  }
+  $("menu-btn").addEventListener("click", function (e) {
+    e.stopPropagation();
+    menu.hidden = !menu.hidden;
+  });
+  document.addEventListener("click", closeMenu);
+  $("menu-shell").addEventListener("click", function () {
+    closeMenu();
+    fetch("/shell?view=" + encodeURIComponent(state.view))
+      .then((r) => r.json())
+      .then((d) => {
+        const done = () => flash("Copied!");
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(d.cmd).then(done, () => flash(d.cmd));
+        } else {
+          flash(d.cmd);
+        }
+      })
+      .catch(() => {});
+  });
+  $("menu-help").addEventListener("click", function () {
+    closeMenu();
+    helpOverlay.hidden = false;
+  });
+  $("help-close").addEventListener("click", () => (helpOverlay.hidden = true));
+  helpOverlay.addEventListener("click", function (e) {
+    if (e.target === helpOverlay) helpOverlay.hidden = true;
+  });
+  function flash(msg) {
+    let el = $("flash");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "flash";
+      el.className = "flash";
+      document.body.appendChild(el);
+    }
+    el.textContent = msg;
+    el.hidden = false;
+    clearTimeout(flash._t);
+    flash._t = setTimeout(() => (el.hidden = true), 1500);
+  }
+
+  $("opt-zebra").addEventListener("change", function () {
+    document.getElementById("app").classList.toggle("no-zebra", !this.checked);
+    try {
+      localStorage.setItem("zerch-zebra", this.checked ? "1" : "0");
+    } catch (_e) {}
+  });
+  $("opt-minimap").addEventListener("change", function () {
+    state.showMinimap = this.checked;
+    minimap.hidden = !this.checked;
+    try {
+      localStorage.setItem("zerch-minimap", this.checked ? "1" : "0");
+    } catch (_e) {}
+    drawMinimap();
+  });
+
   // ---- events ------------------------------------------------------------
   $("range-add-btn").addEventListener("click", addRangeFromInput);
   rangeInput.addEventListener("keydown", (e) => {
@@ -763,9 +846,15 @@
   });
 
   document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !helpOverlay.hidden) {
+      helpOverlay.hidden = true;
+      return;
+    }
     const tag = (e.target && e.target.tagName) || "";
     if (tag === "INPUT" || tag === "TEXTAREA") return;
-    if (e.key === "/") {
+    if (e.key === "?") {
+      helpOverlay.hidden = !helpOverlay.hidden;
+    } else if (e.key === "/") {
       e.preventDefault();
       searchInput.focus();
       searchInput.select();
@@ -815,9 +904,19 @@
         rightPanel.classList.add("collapsed");
         $("panel-toggle").textContent = "◀";
       }
+      if (localStorage.getItem("zerch-zebra") === "0") {
+        document.getElementById("app").classList.add("no-zebra");
+        $("opt-zebra").checked = false;
+      }
+      if (localStorage.getItem("zerch-minimap") === "0") {
+        state.showMinimap = false;
+        minimap.hidden = true;
+        $("opt-minimap").checked = false;
+      }
     } catch (_e) {}
 
     renderPanel();
+    fetchCounts();
     layout();
     refresh(true);
     resolveBookmarkPositions();

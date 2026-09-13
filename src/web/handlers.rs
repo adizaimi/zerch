@@ -5,8 +5,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::engine::search::{search, Op, Scope, SearchTerm};
+use crate::engine::search::{count_term, search, Op, Scope, SearchTerm};
 use crate::view::displayed::{build_displayed_items, DisplayedItem};
+use crate::view::shell::{build_shell_command, ShellCommandOptions, ShellFilter};
 use crate::view::state::{parse_view, serialize_view, FilterMode, ViewState};
 
 use super::render;
@@ -239,4 +240,59 @@ pub fn goto(state: &State, q: &HashMap<String, String>) -> (u16, String) {
         Some(p) => (200, serde_json::json!({ "pos": p }).to_string()),
         None => (404, "{}".to_string()),
     }
+}
+
+/// `GET /counts?view=` — whole-file hit count per filter and per highlight term (in
+/// order), for the panel badges. Mirrors the TUI's per-term counts (unscoped).
+pub fn counts(state: &State, q: &HashMap<String, String>) -> (u16, String) {
+    let token = q.get("view").cloned().unwrap_or_default();
+    let view = parse_view(&token);
+    let count = |term: &str, case: bool, rx: bool| -> i64 {
+        count_term(&state.index, term, case, rx).map(|n| n as i64).unwrap_or(-1) // -1 = bad regex
+    };
+    let filters: Vec<i64> = view
+        .filters
+        .iter()
+        .map(|f| count(&f.term, f.case_sensitive, f.regex))
+        .collect();
+    let highlights: Vec<i64> = view
+        .highlights
+        .iter()
+        .map(|h| count(&h.term, h.case_sensitive, h.regex))
+        .collect();
+    let body = serde_json::json!({ "filters": filters, "highlights": highlights });
+    (200, body.to_string())
+}
+
+/// `GET /shell?view=` — a grep/awk pipeline reproducing the current view, for the
+/// "Copy as shell command" menu item. Reuses `view::shell` (same as the TUI's `g`).
+pub fn shell(state: &State, q: &HashMap<String, String>) -> (u16, String) {
+    let token = q.get("view").cloned().unwrap_or_default();
+    let view = parse_view(&token);
+    let filters: Vec<ShellFilter> = view
+        .filters
+        .iter()
+        .filter(|f| f.enabled && !f.term.is_empty())
+        .map(|f| ShellFilter {
+            term: f.term.clone(),
+            case_sensitive: f.case_sensitive,
+            regex: f.regex,
+            negate: f.negate,
+        })
+        .collect();
+    let mut forced: Vec<usize> = view.bookmarks.iter().chain(&view.visible).copied().collect();
+    forced.sort_unstable();
+    forced.dedup();
+    let file = std::path::Path::new(&state.file_name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&state.file_name)
+        .to_string();
+    let cmd = build_shell_command(&ShellCommandOptions {
+        filters,
+        filter_mode: view.filter_mode,
+        forced_lines: forced,
+        file_name: file,
+    });
+    (200, serde_json::json!({ "cmd": cmd }).to_string())
 }
