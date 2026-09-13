@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>zerch</title>
+  <link rel="stylesheet" href="app.css" />
+  <!-- The server injects the bootstrap object here as JSON. `</` is escaped to
+       `<\/` server-side so log content / file names can't break out of the tag. -->
+  <script type="application/json" id="zerch-bootstrap">__BOOTSTRAP__</script>
+</head>
+<body>
+  <div id="app">
+    <header class="header">
+      <div class="header-left">
+        <h1>zerch</h1>
+        <span class="viewing">Viewing: <span id="file-name"></span></span>
+      </div>
+      <div class="header-right">
+        <span id="total-lines" class="muted"></span>
+      </div>
+    </header>
+    <main class="main-content">
+      <p class="placeholder">Web UI scaffold is up. Rendering pipeline lands in the
+        next commits.</p>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

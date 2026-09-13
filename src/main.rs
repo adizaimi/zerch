@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use zerch::engine::index::{IndexOptions, LineIndex};
-use zerch::tui;
 use zerch::view::state::parse_view;
+use zerch::{tui, web};
 
 const USAGE: &str = "\
 zerch — a less-but-smarter terminal log viewer
@@ -25,6 +25,9 @@ OPTIONS:
                        revealed ranges, search, selected line) from a compact,
                        shareable token. Takes precedence over a saved session.
     --fresh            Open the file clean, ignoring its saved session.
+    --web              Open the log in a local browser tab instead of the TUI
+                       (loopback-only HTTP; the whole view lives in the URL).
+    --web-port <N>     Bind the --web server to port N (default: an ephemeral port).
     -h, --help         Print this help and exit
 
 Each file's view (filters, highlights, hidden lines, search, and the cursor
@@ -48,6 +51,8 @@ fn main() -> ExitCode {
     let mut file_arg: Option<String> = None;
     let mut view_str: Option<String> = None;
     let mut fresh = false;
+    let mut web = false;
+    let mut web_port: Option<u16> = None;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -61,6 +66,25 @@ fn main() -> ExitCode {
             view_str = Some(v.to_string());
         } else if a == "--fresh" {
             fresh = true;
+        } else if a == "--web" {
+            web = true;
+        } else if a == "--web-port" || a.starts_with("--web-port=") {
+            let raw = if let Some(v) = a.strip_prefix("--web-port=") {
+                Some(v.to_string())
+            } else {
+                i += 1;
+                args.get(i).cloned()
+            };
+            match raw.as_deref().map(str::parse::<u16>) {
+                Some(Ok(p)) => {
+                    web = true;
+                    web_port = Some(p);
+                }
+                _ => {
+                    eprintln!("zerch: --web-port needs a port number (1-65535)");
+                    return ExitCode::FAILURE;
+                }
+            }
         } else if file_arg.is_none() && (a == "-" || !a.starts_with('-')) {
             file_arg = Some(a.clone());
         }
@@ -69,7 +93,8 @@ fn main() -> ExitCode {
 
     // Output must be a TTY (we draw a UI). Input from stdin is fine — that's
     // the whole point of piping; crossterm reads keyboard from /dev/tty on Unix.
-    if !io::stdout().is_terminal() {
+    // The web UI needs no terminal, so skip the guard under --web.
+    if !web && !io::stdout().is_terminal() {
         eprintln!("zerch: stdout is not a TTY — run in an interactive terminal");
         return ExitCode::FAILURE;
     }
@@ -118,7 +143,9 @@ fn main() -> ExitCode {
     // container), so no redirect is needed there. On macOS, some setups fail at
     // that step; we defensively redirect fd 0 to /dev/tty here so crossterm's
     // isatty(0) branch takes over.
-    if from_pipe {
+    // Only the TUI reads the keyboard; the web server never touches the tty, so a
+    // piped log (`… | zerch --web`) needs no redirect.
+    if from_pipe && !web {
         if let Err(e) = redirect_stdin_to_tty() {
             eprintln!("zerch: could not open /dev/tty for keyboard input: {e}");
             return ExitCode::FAILURE;
@@ -155,7 +182,12 @@ fn main() -> ExitCode {
     eprint!("\r\x1b[2K"); // carriage return + clear line
     let _ = io::stderr().flush();
 
-    let code = match tui::run(index, display_name, initial_view, session_key, !fresh) {
+    let result = if web {
+        web::run(index, display_name, initial_view, session_key, !fresh, web_port)
+    } else {
+        tui::run(index, display_name, initial_view, session_key, !fresh)
+    };
+    let code = match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("zerch: {e}");

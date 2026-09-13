@@ -44,6 +44,9 @@ rayon = "1"
 form_urlencoded = "1"
 ratatui = "0.29"
 tempfile = "3"
+# Blocking, pure-Rust HTTP for the local `--web` browser UI. default-features = false
+# drops every TLS backend (loopback-only, no TLS) so no openssl-sys enters the deb.
+tiny_http = { version = "0.12", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

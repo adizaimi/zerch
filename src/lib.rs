@@ -10,6 +10,7 @@ pub mod levels;
 pub(crate) mod session;
 pub mod tui;
 pub mod view;
+pub mod web;
 
 /// Choose a rayon worker-thread count sized to the file. The parallel work
 /// (indexing, searching) scales with the file, so tiny files don't need a pool at
