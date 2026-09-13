@@ -7,6 +7,7 @@
 
 pub mod engine;
 pub mod levels;
+pub(crate) mod session;
 pub mod tui;
 pub mod view;
 

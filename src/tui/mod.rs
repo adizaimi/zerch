@@ -4,9 +4,9 @@
 
 pub mod app;
 mod history;
-mod session;
 
 use crate::engine::index::LineIndex;
+use crate::session;
 use crate::view::state::{parse_view, ViewState};
 use std::path::PathBuf;
 use app::App;
