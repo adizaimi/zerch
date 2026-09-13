@@ -1,3 +1,17 @@
+zerch (0.7.0) unstable; urgency=medium
+
+  * The --web browser UI reaches feature parity with the terminal viewer: log-level
+    filter chips, a drag-to-filter time histogram, per-line JSON pretty-print and
+    wrap (variable-height rows), per-term hit counts, a "copy as shell command"
+    (grep/awk) export, a keyboard-shortcuts help overlay, a recent-search dropdown,
+    a four-lane minimap (bookmarks/matches/ranges/selected), double-click to anchor
+    a line, and Zebra/Minimap/Histogram display toggles. All view state (now
+    including level and time-range filters) stays in the URL as the --view token, so
+    every view remains a shareable link. Still loopback-only, still no new runtime
+    dependencies.
+
+ -- Adi Zaimi <adizaimi@yahoo.com>  Sat, 13 Sep 2026 18:00:00 +0000
+
 zerch (0.6.0) unstable; urgency=medium
 
   * New --web mode: open a log in a local browser tab instead of the TUI

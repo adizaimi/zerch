@@ -61,9 +61,11 @@ Piped/stdin input has no session (there's no stable file to key on).
 ### Web UI (`--web`)
 
 `zerch <file> --web` opens the log in a local browser tab instead of the TUI, reusing
-the same engine and view model. It's a fast local viewer with clickable filters,
-highlights, bookmarks, search, a minimap, and hide/reveal — not a remote/multi-user
-server.
+the same engine and view model. It's a fast local viewer with clickable filters
+(with per-term counts and AND/OR), highlights, log-level chips, live search with
+`n`/`N` navigation, bookmarks and revealed ranges, hide/reveal, a minimap, a
+drag-to-filter time histogram, per-line JSON pretty-print and wrap, and a
+"copy as shell command" (grep/awk) export — not a remote/multi-user server.
 
 ```
 zerch app.log --web                 # bind an ephemeral loopback port, open the browser
@@ -169,7 +171,7 @@ licenses). `Depends:` is derived automatically from the linked libraries.
 
 ```
 cargo install cargo-deb
-cargo deb            # → target/debian/zerch_0.6.0_<arch>.deb
+cargo deb            # → target/debian/zerch_0.7.0_<arch>.deb
 sudo apt install ./target/debian/zerch_*.deb
 ```
 
@@ -180,7 +182,7 @@ A debhelper source package lives in `debian/` (required at the repo root by
 
 ```
 sudo apt install devscripts debhelper cargo rustc
-dpkg-buildpackage -us -uc -b     # → ../zerch_0.6.0_<arch>.deb
+dpkg-buildpackage -us -uc -b     # → ../zerch_0.7.0_<arch>.deb
 ```
 
 `cargo` fetches the crate dependencies during the build, so the build host needs

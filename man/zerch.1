@@ -1,4 +1,4 @@
-.TH ZERCH 1 "2026-09-13" "zerch 0.6.0" "User Commands"
+.TH ZERCH 1 "2026-09-13" "zerch 0.7.0" "User Commands"
 .SH NAME
 zerch \- a less-but-smarter terminal log viewer
 .SH SYNOPSIS
@@ -131,9 +131,11 @@ to exit immediately).
 With
 .BR \-\-web ,
 zerch serves the log to a local browser tab over loopback\-only HTTP instead of
-drawing the terminal UI. It offers clickable filters, highlights, bookmarks,
-search, a minimap, and hide/reveal, reusing the same engine and view model. The
-entire view is encoded in the page URL as the same
+drawing the terminal UI. It offers clickable filters (with per\-term counts),
+highlights, log\-level chips, live search with n/N navigation, bookmarks and
+revealed ranges, hide/reveal, a minimap, a drag\-to\-filter time histogram,
+per\-line JSON pretty\-print and wrap, and a grep/awk export, reusing the same
+engine and view model. The entire view is encoded in the page URL as the same
 .B \-\-view
 token, so every view is a shareable link and each browser tab is independent.
 The server binds
