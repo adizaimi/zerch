@@ -40,6 +40,8 @@ pub struct State {
     pub initial_view: String,
     /// Token-keyed LRU of computed displayed sequences (front = most recent).
     pub cache: Mutex<Vec<(String, Arc<Displayed>)>>,
+    /// Lazily-computed whole-file line count per level code 0..=6 (for level chips).
+    pub level_counts: Mutex<Option<Vec<u64>>>,
 }
 
 /// Run the web UI. Binds loopback HTTP, opens the browser, and blocks in the request
@@ -72,6 +74,7 @@ pub fn run(
         last_saved: Mutex::new(None),
         initial_view: initial_token,
         cache: Mutex::new(Vec::new()),
+        level_counts: Mutex::new(None),
     });
 
     let addr = format!("127.0.0.1:{}", port.unwrap_or(0));

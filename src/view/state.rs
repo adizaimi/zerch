@@ -55,6 +55,7 @@ pub struct ViewState {
     pub hide_cols: String,   // 1-based column list to blank out, e.g. "1,2,5"
     pub col_sep: String,     // column separator (empty = default comma)
     pub syntax: bool,        // whole-line syntax colouring toggle
+    pub levels: Vec<u8>,     // restrict to these canonical level codes (empty = all)
     pub search: String,
     pub search_regex: bool,
     pub search_case: bool,
@@ -174,6 +175,13 @@ pub fn serialize_view(v: &ViewState) -> String {
         p.append_pair("syntax", "1");
     }
 
+    if !v.levels.is_empty() {
+        let mut lv = v.levels.clone();
+        lv.sort_unstable();
+        lv.dedup();
+        p.append_pair("levels", &lv.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(","));
+    }
+
     if let Some(sel) = v.selected {
         p.append_pair("selected", &sel.to_string());
     }
@@ -241,6 +249,11 @@ pub fn parse_view(query: &str) -> ViewState {
         hide_cols: get("hidecols"),
         col_sep: get("colsep"),
         syntax: get("syntax") == "1",
+        levels: list("levels")
+            .iter()
+            .filter_map(|s| s.parse::<u8>().ok())
+            .filter(|&n| n <= 6)
+            .collect(),
         search: get("search"),
         search_regex: get("srx") == "1",
         search_case: get("scase") == "1",

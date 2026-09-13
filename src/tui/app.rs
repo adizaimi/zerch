@@ -1311,6 +1311,9 @@ impl App {
             // Emit the separator only when it differs from the default comma.
             col_sep: if self.col_sep_text == "," { String::new() } else { self.col_sep_text.clone() },
             syntax: self.syntax_color,
+            // The TUI has no level-chip UI; the web sets this. Kept default so the
+            // token format stays single-sourced in view::state.
+            levels: Vec::new(),
         }
     }
 

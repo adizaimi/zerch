@@ -33,7 +33,13 @@
   const rangeList = $("range-list");
   const rangeInput = $("range-input");
   const modeToggle = $("mode-toggle");
+  const levelChips = $("level-chips");
   const rightPanel = $("right-panel");
+
+  // Level colours — must match render::level_hex / levels.ts (index = level code).
+  const LEVEL_COLORS = [
+    "#90a4ae", "#9e9e9e", "#78909c", "#4caf50", "#ffa726", "#ef5350", "#c2185b",
+  ];
 
   // Highlight palette — must match view::HIGHLIGHT_PALETTE (parse_view assigns colours
   // by index, so the server and client agree on which colour each highlight gets).
@@ -652,6 +658,7 @@
     });
 
     renderRanges();
+    renderLevelChips();
   }
 
   function addFilter() {
@@ -863,6 +870,73 @@
     }
   }
 
+  // ---- level filter chips ------------------------------------------------
+  let levelData = null; // { counts:[c0..c6], names:[...] }
+  function fetchLevels() {
+    fetch("/levels")
+      .then((r) => r.json())
+      .then((d) => {
+        levelData = d;
+        renderLevelChips();
+      })
+      .catch(() => {});
+  }
+  const activeLevels = () => {
+    const v = tokenParams().get("levels");
+    return v ? v.split(",").map(Number).filter((n) => !isNaN(n)) : [];
+  };
+  function presentLevels() {
+    const out = [];
+    if (!levelData) return out;
+    for (let c = 0; c <= 6; c++) if ((levelData.counts[c] || 0) > 0) out.push(c);
+    return out;
+  }
+  // The token stores the restrict-to set; empty (or all present) = no restriction.
+  function setLevels(list) {
+    const present = presentLevels();
+    const sorted = [...new Set(list)].sort((a, b) => a - b);
+    const p = tokenParams();
+    if (sorted.length === 0 || sorted.length === present.length) p.delete("levels");
+    else p.set("levels", sorted.join(","));
+    commitToken(p);
+    painted = { from: -1, to: -1 };
+    refresh(true);
+    renderPanel();
+    resolveMarkers();
+    if (tokenParams().get("search") || "") fetchMatches(false);
+  }
+  function renderLevelChips() {
+    if (!levelData) return;
+    const present = presentLevels();
+    levelChips.textContent = "";
+    if (present.length <= 1) return; // nothing meaningful to filter by
+    const active = activeLevels();
+    const shown = active.length ? new Set(active) : new Set(present);
+    present.forEach((c) => {
+      const chip = document.createElement("button");
+      chip.className = "chip" + (shown.has(c) ? "" : " off");
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.style.background = LEVEL_COLORS[c];
+      const name = document.createElement("span");
+      name.textContent = c === 0 ? "no level" : levelData.names[c];
+      const cnt = document.createElement("span");
+      cnt.className = "c";
+      cnt.textContent = (levelData.counts[c] || 0).toLocaleString();
+      chip.appendChild(dot);
+      chip.appendChild(name);
+      chip.appendChild(cnt);
+      chip.addEventListener("click", () => {
+        const s = new Set(shown);
+        if (s.has(c)) s.delete(c);
+        else s.add(c);
+        if (s.size === 0) return; // keep at least one level on
+        setLevels([...s]);
+      });
+      levelChips.appendChild(chip);
+    });
+  }
+
   // ---- menu, help overlay, display settings ------------------------------
   const menu = $("menu");
   const helpOverlay = $("help-overlay");
@@ -1062,6 +1136,7 @@
 
     renderPanel();
     fetchCounts();
+    fetchLevels();
     layout();
     refresh(true);
     resolveMarkers();

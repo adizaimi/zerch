@@ -57,6 +57,7 @@ fn displayed_key(view: &ViewState) -> String {
         bookmarks: view.bookmarks.clone(),
         visible: view.visible.clone(),
         hidden: view.hidden.clone(),
+        levels: view.levels.clone(),
         ..ViewState::default()
     };
     serialize_view(&reduced)
@@ -78,14 +79,16 @@ pub fn displayed_for(state: &State, _token: &str, view: &ViewState) -> Arc<Displ
 
     let total = state.index.total_lines();
     let stack: Vec<SearchTerm> = build_stack(view);
-    let displayed = if stack.is_empty() && view.hidden.is_empty() {
+    let has_filter = !stack.is_empty() || !view.levels.is_empty();
+    let displayed = if !has_filter && view.hidden.is_empty() {
         // Unfiltered and nothing hidden → every line, in order, no gaps.
         Displayed::All(total)
     } else {
-        let matching: Vec<usize> = if stack.is_empty() {
+        let matching: Vec<usize> = if !has_filter {
             (1..=total).collect() // unfiltered base; hidden lines carve gaps
         } else {
-            search(&state.index, &stack, &Scope::default())
+            let scope = Scope { time_range: None, levels: view.levels.clone() };
+            search(&state.index, &stack, &scope)
                 .map(|r| r.matching_lines)
                 .unwrap_or_default()
         };
@@ -300,6 +303,36 @@ pub fn counts(state: &State, q: &HashMap<String, String>) -> (u16, String) {
         .collect();
     let body = serde_json::json!({ "filters": filters, "highlights": highlights });
     (200, body.to_string())
+}
+
+/// `GET /levels` — whole-file line count per canonical level code 0..=6 (computed
+/// once and cached), with names, for the level-filter chips. Code 0 = "no level".
+pub fn levels(state: &State) -> (u16, String) {
+    {
+        let cache = state.level_counts.lock().unwrap();
+        if let Some(counts) = cache.as_ref() {
+            return (200, levels_body(counts));
+        }
+    }
+    let total = state.index.total_lines();
+    let mut counts = vec![0u64; 7];
+    for n in 1..=total {
+        let lvl = state.index.level_of(n) as usize;
+        if lvl < counts.len() {
+            counts[lvl] += 1;
+        }
+    }
+    *state.level_counts.lock().unwrap() = Some(counts.clone());
+    (200, levels_body(&counts))
+}
+
+fn levels_body(counts: &[u64]) -> String {
+    use crate::levels::LEVEL_NAMES;
+    serde_json::json!({
+        "counts": counts,
+        "names": LEVEL_NAMES,
+    })
+    .to_string()
 }
 
 /// `GET /shell?view=` — a grep/awk pipeline reproducing the current view, for the
