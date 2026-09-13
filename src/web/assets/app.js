@@ -30,6 +30,8 @@
   const matchN = $("match-n");
   const filterList = $("filter-list");
   const highlightList = $("highlight-list");
+  const rangeList = $("range-list");
+  const rangeInput = $("range-input");
   const modeToggle = $("mode-toggle");
   const rightPanel = $("right-panel");
 
@@ -48,6 +50,7 @@
     fileLines: boot.total || 0,
     matches: [],
     matchIdx: -1,
+    bmIdx: -1,
     selectedText: "",
     regexOn: false,
   };
@@ -80,31 +83,69 @@
     spacer.style.height = Math.max(domH, 1) + "px";
   }
 
-  function makeRow(item, index, topPx, isCurrent) {
+  function makeRow(item, index, topPx, isCurrent, bmSet) {
     if (item.t === "g") {
       const g = document.createElement("div");
       g.className = "gap-row";
       g.style.top = topPx + "px";
-      g.textContent =
-        "··· " + item.count.toLocaleString() + " hidden (" + item.start + "–" + item.end + ") ···";
+      const below = document.createElement("button");
+      below.className = "gap-btn";
+      below.textContent = "↓5";
+      below.title = "reveal 5 from the top of the gap";
+      below.addEventListener("click", () =>
+        revealRange(item.start, Math.min(item.end, item.start + 4))
+      );
+      const label = document.createElement("span");
+      label.textContent =
+        " ··· " + item.count.toLocaleString() + " hidden (" + item.start + "–" + item.end + ") ··· ";
+      const above = document.createElement("button");
+      above.className = "gap-btn";
+      above.textContent = "↑5";
+      above.title = "reveal 5 from the bottom of the gap";
+      above.addEventListener("click", () =>
+        revealRange(Math.max(item.start, item.end - 4), item.end)
+      );
+      g.appendChild(below);
+      g.appendChild(label);
+      g.appendChild(above);
       return g;
     }
+    const bookmarked = bmSet.has(item.n);
     const row = document.createElement("div");
-    row.className = "line-row" + (index % 2 === 1 ? " zebra" : "");
+    row.className = "line-row" + (index % 2 === 1 ? " zebra" : "") + (bookmarked ? " bookmarked" : "");
     row.style.top = topPx + "px";
     row.dataset.n = item.n;
 
     const gutter = document.createElement("div");
     gutter.className = "line-number";
     gutter.style.boxShadow = "inset 3px 0 0 " + item.lvl;
-    gutter.textContent = item.n;
+    if (bookmarked) {
+      const star = document.createElement("span");
+      star.className = "star";
+      star.textContent = "★";
+      gutter.appendChild(star);
+    }
+    gutter.appendChild(document.createTextNode(item.n));
+    gutter.title = "click: bookmark · shift-click: ±5 context";
+    gutter.addEventListener("click", (e) => {
+      if (e.shiftKey) revealContext(item.n);
+      else toggleBookmark(item.n);
+    });
 
     const content = document.createElement("div");
     content.className = "line-content";
     content.innerHTML = item.html; // server-rendered + server-escaped
-    if (isCurrent) {
-      content.querySelectorAll(".s").forEach((s) => s.classList.add("s-cur"));
-    }
+    if (isCurrent) content.querySelectorAll(".s").forEach((s) => s.classList.add("s-cur"));
+
+    const actions = document.createElement("span");
+    actions.className = "line-actions";
+    const hideBtn = document.createElement("button");
+    hideBtn.className = "act";
+    hideBtn.textContent = "×";
+    hideBtn.title = "Hide this line";
+    hideBtn.addEventListener("click", () => hideLine(item.n));
+    actions.appendChild(hideBtn);
+    content.appendChild(actions);
 
     row.appendChild(gutter);
     row.appendChild(content);
@@ -129,11 +170,12 @@
       state.matchIdx >= 0 && state.matches[state.matchIdx] != null
         ? state.matches[state.matchIdx]
         : -1;
+    const bmSet = new Set(parseRangeSpec(tokenParams().get("bookmarks")));
     const frag = document.createDocumentFragment();
     for (let k = 0; k < rows.length; k++) {
       const index = from + k;
       const topPx = domTop + (index * ROW_H - virtualTop);
-      frag.appendChild(makeRow(rows[k], index, topPx, index === curPos));
+      frag.appendChild(makeRow(rows[k], index, topPx, index === curPos, bmSet));
     }
     rowsEl.textContent = "";
     rowsEl.appendChild(frag);
@@ -407,6 +449,8 @@
       row.appendChild(rm);
       highlightList.appendChild(row);
     });
+
+    renderRanges();
   }
 
   function addFilter() {
@@ -430,7 +474,167 @@
     searchClear.hidden = true;
   }
 
+  // ---- bookmarks, visible ranges, hidden lines (token sets) --------------
+  function parseRangeSpec(v) {
+    const out = [];
+    if (!v) return out;
+    v.split(",").forEach((piece) => {
+      const m = /^(\d+)(?:-(\d+))?$/.exec(piece.trim());
+      if (m) {
+        const lo = +m[1];
+        const hi = m[2] ? +m[2] : lo;
+        for (let n = Math.min(lo, hi); n <= Math.max(lo, hi); n++) out.push(n);
+      }
+    });
+    return out;
+  }
+  function encodeRuns(nums) {
+    const s = [...new Set(nums)].sort((a, b) => a - b);
+    const out = [];
+    let i = 0;
+    while (i < s.length) {
+      let j = i;
+      while (j + 1 < s.length && s[j + 1] === s[j] + 1) j++;
+      out.push(i === j ? String(s[i]) : s[i] + "-" + s[j]);
+      i = j + 1;
+    }
+    return out.join(",");
+  }
+  const currentSets = (p) => ({
+    bookmarks: new Set(parseRangeSpec(p.get("bookmarks"))),
+    visible: new Set(parseRangeSpec(p.get("visible"))),
+    hidden: new Set(parseRangeSpec(p.get("hidden"))),
+  });
+  function writeSets(p, s) {
+    const bm = [...s.bookmarks].sort((a, b) => a - b);
+    if (bm.length) p.set("bookmarks", bm.join(","));
+    else p.delete("bookmarks");
+    const vis = encodeRuns([...s.visible]);
+    if (vis) p.set("visible", vis);
+    else p.delete("visible");
+    const hid = encodeRuns([...s.hidden]);
+    if (hid) p.set("hidden", hid);
+    else p.delete("hidden");
+  }
+  function editSets(mutate) {
+    const p = tokenParams();
+    const s = currentSets(p);
+    mutate(s);
+    writeSets(p, s);
+    commitToken(p);
+    painted = { from: -1, to: -1 };
+    refresh(true);
+    renderPanel();
+    if (tokenParams().get("search") || "") fetchMatches(false);
+  }
+  function toggleBookmark(n) {
+    editSets((s) => (s.bookmarks.has(n) ? s.bookmarks.delete(n) : s.bookmarks.add(n)));
+  }
+  function hideLine(n) {
+    editSets((s) => {
+      s.hidden.add(n);
+      s.bookmarks.delete(n);
+      s.visible.delete(n);
+    });
+  }
+  function revealRange(a, b) {
+    editSets((s) => {
+      for (let n = a; n <= b; n++) {
+        s.visible.add(n);
+        s.hidden.delete(n);
+      }
+    });
+  }
+  const revealContext = (n) =>
+    revealRange(Math.max(1, n - 5), Math.min(state.fileLines, n + 5));
+
+  function gotoLine(line) {
+    fetch("/goto?view=" + encodeURIComponent(state.view) + "&line=" + line)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d) scrollToPos(d.pos);
+      })
+      .catch(() => {});
+  }
+  function goBookmark(delta) {
+    const bms = parseRangeSpec(tokenParams().get("bookmarks")).sort((a, b) => a - b);
+    if (!bms.length) return;
+    state.bmIdx = (state.bmIdx + delta + bms.length) % bms.length;
+    gotoLine(bms[state.bmIdx]);
+  }
+
+  function renderRanges() {
+    const p = tokenParams();
+    const s = currentSets(p);
+    rangeList.textContent = "";
+    const bms = [...s.bookmarks].sort((a, b) => a - b);
+    const vis = [...s.visible].sort((a, b) => a - b);
+    if (bms.length === 0 && vis.length === 0) {
+      const e = document.createElement("div");
+      e.className = "empty";
+      e.textContent = "No bookmarks or revealed ranges";
+      rangeList.appendChild(e);
+      return;
+    }
+    bms.forEach((n) => rangeList.appendChild(rangeRow("★", n, () => toggleBookmark(n), n)));
+    // Coalesce visible lines into run labels for display.
+    encodeRuns(vis)
+      .split(",")
+      .filter(Boolean)
+      .forEach((label) => {
+        const first = +label.split("-")[0];
+        rangeList.appendChild(
+          rangeRow("▷", label, () =>
+            editSets((st) => parseRangeSpec(label).forEach((n) => st.visible.delete(n)))
+          , first)
+        );
+      });
+  }
+  function rangeRow(icon, label, onRemove, jumpLine) {
+    const row = document.createElement("div");
+    row.className = "prow";
+    const ic = document.createElement("span");
+    ic.className = "star-btn";
+    ic.textContent = icon;
+    const term = document.createElement("span");
+    term.className = "term";
+    term.textContent = " " + label;
+    const jump = document.createElement("button");
+    jump.className = "jump";
+    jump.textContent = "→";
+    jump.title = "Jump";
+    jump.addEventListener("click", () => gotoLine(jumpLine));
+    const rm = document.createElement("button");
+    rm.className = "rm";
+    rm.textContent = "×";
+    rm.addEventListener("click", onRemove);
+    row.appendChild(ic);
+    row.appendChild(term);
+    row.appendChild(jump);
+    row.appendChild(rm);
+    return row;
+  }
+  function addRangeFromInput() {
+    const nums = parseRangeSpec(rangeInput.value);
+    if (nums.length) {
+      editSets((s) => nums.forEach((n) => {
+        if (n >= 1 && n <= state.fileLines) {
+          s.visible.add(n);
+          s.hidden.delete(n);
+        }
+      }));
+      rangeInput.value = "";
+    }
+  }
+
   // ---- events ------------------------------------------------------------
+  $("range-add-btn").addEventListener("click", addRangeFromInput);
+  rangeInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addRangeFromInput();
+    }
+  });
   $("filter-btn").addEventListener("click", addFilter);
   $("highlight-btn").addEventListener("click", addHighlight);
   modeToggle.addEventListener("click", () =>
@@ -492,6 +696,10 @@
       goMatch(1);
     } else if (e.key === "N") {
       goMatch(-1);
+    } else if (e.key === "]") {
+      goBookmark(1);
+    } else if (e.key === "[") {
+      goBookmark(-1);
     } else if (e.key === "g") {
       scroller.scrollTop = 0;
       refresh(true);
