@@ -126,9 +126,22 @@ fn build_stack(view: &ViewState) -> Vec<SearchTerm> {
         .collect()
 }
 
+/// Persist the view token to this file's session, best-effort, only when it changed
+/// (so scrolling — which changes `from`/`to`, not the token — never touches the disk).
+/// The latest token is thus durably saved by the time the user hits Ctrl+C.
+fn persist(state: &State, token: &str) {
+    let Some(key) = &state.session_key else { return };
+    let mut last = state.last_saved.lock().unwrap();
+    if last.as_deref() != Some(token) {
+        crate::session::save(key, token);
+        *last = Some(token.to_string());
+    }
+}
+
 /// `GET /rows?view=&from=&to=` — render displayed positions `[from, to)` to HTML.
 pub fn rows(state: &State, q: &HashMap<String, String>) -> (u16, String) {
     let token = q.get("view").cloned().unwrap_or_default();
+    persist(state, &token);
     let view = parse_view(&token);
     let displayed = displayed_for(state, &token, &view);
     let total = displayed.len();

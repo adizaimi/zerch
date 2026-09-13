@@ -153,6 +153,20 @@ body {
 .scroller::-webkit-scrollbar-track { background: #f1f1f1; }
 .scroller::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 5px; }
 
+/* minimap overlay: sits over the right scrollbar gutter, adds no layout width */
+.minimap {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 18px;
+  height: 100%;
+  background: rgba(245, 246, 247, 0.55);
+  opacity: 0.85;
+  cursor: pointer;
+  z-index: 3;
+}
+.minimap:hover { opacity: 1; }
+
 /* ---- rows --------------------------------------------------------------- */
 .line-row {
   position: absolute;

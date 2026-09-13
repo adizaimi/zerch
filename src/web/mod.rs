@@ -33,11 +33,8 @@ pub struct State {
     pub index: Arc<LineIndex>,
     pub file_name: String,
     /// Canonical path for session persistence (None for piped input).
-    // Wired into request handling in a later commit (session persistence).
-    #[allow(dead_code)]
     pub session_key: Option<PathBuf>,
     /// Last view token written to the session file, so unchanged tokens skip the disk.
-    #[allow(dead_code)]
     pub last_saved: Mutex<Option<String>>,
     /// The seed token served to `GET /` (from `--view` or the restored session).
     pub initial_view: String,

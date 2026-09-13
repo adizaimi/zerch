@@ -51,9 +51,11 @@
     matches: [],
     matchIdx: -1,
     bmIdx: -1,
+    bookmarkPos: [],
     selectedText: "",
     regexOn: false,
   };
+  const minimap = $("minimap");
   $("total-lines").textContent = state.fileLines.toLocaleString() + " lines";
 
   (function setGutter() {
@@ -200,6 +202,7 @@
           layout();
         }
         paint(data.rows, data.from);
+        drawMinimap();
       })
       .catch((e) => {
         if (e.name !== "AbortError") console.error(e);
@@ -213,6 +216,65 @@
     scroller.scrollTop = top;
     refresh(true);
   }
+
+  // ---- minimap -----------------------------------------------------------
+  function drawLane(ctx, positions, x, color, total, H) {
+    ctx.fillStyle = color;
+    let last = -1;
+    for (const p of positions) {
+      const y = Math.floor((p / total) * H); // one tick per pixel row (bucketed)
+      if (y === last) continue;
+      last = y;
+      ctx.fillRect(x, y, 6, 3);
+    }
+  }
+  function drawMinimap() {
+    const rect = minimap.getBoundingClientRect();
+    const W = rect.width;
+    const H = rect.height;
+    if (!W || !H) return;
+    const dpr = window.devicePixelRatio || 1;
+    minimap.width = W * dpr;
+    minimap.height = H * dpr;
+    const ctx = minimap.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const total = Math.max(state.total, 1);
+    drawLane(ctx, state.bookmarkPos, 0, "#f1c40f", total, H);
+    drawLane(ctx, state.matches, 6, "#e67e22", total, H);
+    // viewport box
+    const topPos = (scroller.scrollTop * scale) / ROW_H;
+    const y = (topPos / total) * H;
+    const h = Math.max(3, (viewportH / ROW_H / total) * H);
+    ctx.fillStyle = "rgba(52,152,219,0.14)";
+    ctx.fillRect(0, y, W, h);
+    ctx.strokeStyle = "rgba(41,128,185,0.55)";
+    ctx.strokeRect(0.5, y + 0.5, W - 1, Math.max(1, h - 1));
+  }
+  function resolveBookmarkPositions() {
+    const bms = parseRangeSpec(tokenParams().get("bookmarks"));
+    if (!bms.length) {
+      state.bookmarkPos = [];
+      drawMinimap();
+      return;
+    }
+    Promise.all(
+      bms.map((n) =>
+        fetch("/goto?view=" + encodeURIComponent(state.view) + "&line=" + n)
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null)
+      )
+    ).then((res) => {
+      state.bookmarkPos = res.filter(Boolean).map((d) => d.pos).sort((a, b) => a - b);
+      drawMinimap();
+    });
+  }
+  minimap.addEventListener("click", function (e) {
+    const rect = minimap.getBoundingClientRect();
+    const frac = (e.clientY - rect.top) / rect.height;
+    const pos = Math.max(0, Math.min(state.total - 1, Math.floor(frac * state.total)));
+    scrollToPos(pos);
+  });
 
   // ---- search + match navigation ----------------------------------------
   function updateCounter() {
@@ -525,6 +587,7 @@
     painted = { from: -1, to: -1 };
     refresh(true);
     renderPanel();
+    resolveBookmarkPositions();
     if (tokenParams().get("search") || "") fetchMatches(false);
   }
   function toggleBookmark(n) {
@@ -715,11 +778,13 @@
     raf = requestAnimationFrame(function () {
       raf = 0;
       refresh(false);
+      drawMinimap();
     });
   });
   window.addEventListener("resize", function () {
     layout();
     refresh(true);
+    drawMinimap();
   });
 
   // ---- init from the seed token -----------------------------------------
@@ -741,6 +806,7 @@
     renderPanel();
     layout();
     refresh(true);
+    resolveBookmarkPositions();
     if (term) fetchMatches(true);
   })();
 })();
