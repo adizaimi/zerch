@@ -29,6 +29,8 @@
           <button id="search-clear" class="search-clear" title="Clear" hidden>×</button>
         </span>
         <button id="search-btn" class="btn btn-search">Search</button>
+        <button id="filter-btn" class="btn btn-filter" title="Add current term as a filter">Filter</button>
+        <button id="highlight-btn" class="btn btn-highlight" title="Add current term as a highlight">Highlight</button>
         <span id="total-lines" class="muted"></span>
       </div>
     </header>
@@ -39,6 +41,24 @@
           <div id="rows" class="rows"></div>
         </div>
       </div>
+      <aside id="right-panel" class="right-panel">
+        <button id="panel-toggle" class="panel-toggle" title="Collapse/expand">▶</button>
+        <div class="panel-content">
+          <section class="panel-section">
+            <div class="section-head">
+              <span class="section-title">Filters</span>
+              <button id="mode-toggle" class="mode-toggle" title="Match ALL / ANY">AND</button>
+            </div>
+            <div id="filter-list" class="plist"></div>
+          </section>
+          <section class="panel-section">
+            <div class="section-head">
+              <span class="section-title">Highlights</span>
+            </div>
+            <div id="highlight-list" class="plist"></div>
+          </section>
+        </div>
+      </aside>
     </main>
   </div>
   <script src="app.js"></script>

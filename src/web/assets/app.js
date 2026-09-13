@@ -28,6 +28,17 @@
   const regexToggle = $("regex-toggle");
   const counter = $("match-counter");
   const matchN = $("match-n");
+  const filterList = $("filter-list");
+  const highlightList = $("highlight-list");
+  const modeToggle = $("mode-toggle");
+  const rightPanel = $("right-panel");
+
+  // Highlight palette — must match view::HIGHLIGHT_PALETTE (parse_view assigns colours
+  // by index, so the server and client agree on which colour each highlight gets).
+  const PALETTE = [
+    "#4fc3f7", "#81c784", "#ba68c8", "#ff8a65", "#f06292",
+    "#4db6ac", "#9575cd", "#aed581", "#ffb74d", "#a1887f",
+  ];
 
   $("file-name").textContent = boot.file || "(stdin)";
 
@@ -236,7 +247,202 @@
     refresh(true);
   }
 
+  // ---- filters & highlights (right panel) --------------------------------
+  const splitList = (v) => (v ? v.split(",") : []);
+  function bits(v, len, dflt) {
+    const raw = splitList(v);
+    const out = [];
+    for (let i = 0; i < len; i++) out.push(raw[i] === undefined ? dflt : raw[i] === "1");
+    return out;
+  }
+  const setBits = (p, key, arr) =>
+    arr.some((x) => x) ? p.set(key, arr.map((x) => (x ? "1" : "0")).join(",")) : p.delete(key);
+
+  function readFilters(p) {
+    const terms = splitList(p.get("filters"));
+    const en = bits(p.get("enabled"), terms.length, true);
+    const fc = bits(p.get("fcase"), terms.length, false);
+    const fr = bits(p.get("frx"), terms.length, false);
+    const fn = bits(p.get("fneg"), terms.length, false);
+    return terms.map((t, i) => ({
+      term: t,
+      enabled: en[i],
+      case: fc[i],
+      regex: fr[i],
+      negate: fn[i],
+    }));
+  }
+  function writeFilters(p, filters) {
+    if (filters.length === 0) {
+      ["filters", "enabled", "mode", "fcase", "frx", "fneg"].forEach((k) => p.delete(k));
+      return;
+    }
+    p.set("filters", filters.map((f) => f.term).join(","));
+    p.set("enabled", filters.map((f) => (f.enabled ? "1" : "0")).join(","));
+    p.set("mode", p.get("mode") === "OR" ? "OR" : "AND");
+    setBits(p, "fcase", filters.map((f) => f.case));
+    setBits(p, "frx", filters.map((f) => f.regex));
+    setBits(p, "fneg", filters.map((f) => f.negate));
+  }
+
+  function readHighlights(p) {
+    const terms = splitList(p.get("highlights"));
+    const hc = bits(p.get("hcase"), terms.length, false);
+    const hr = bits(p.get("hrx"), terms.length, false);
+    const he = bits(p.get("henabled"), terms.length, true);
+    return terms.map((t, i) => ({
+      term: t,
+      case: hc[i],
+      regex: hr[i],
+      enabled: he[i],
+      color: PALETTE[i % PALETTE.length],
+    }));
+  }
+  function writeHighlights(p, hs) {
+    if (hs.length === 0) {
+      ["highlights", "hcase", "hrx", "henabled"].forEach((k) => p.delete(k));
+      return;
+    }
+    p.set("highlights", hs.map((h) => h.term).join(","));
+    setBits(p, "hcase", hs.map((h) => h.case));
+    setBits(p, "hrx", hs.map((h) => h.regex));
+    // henabled is emitted only when some highlight is disabled (matches serialize_view).
+    if (hs.some((h) => !h.enabled)) p.set("henabled", hs.map((h) => (h.enabled ? "1" : "0")).join(","));
+    else p.delete("henabled");
+  }
+
+  // Apply a mutation to the current filter/highlight lists, commit, and refresh.
+  function editLists(mutate, displayedChanged) {
+    const p = tokenParams();
+    const filters = readFilters(p);
+    const highlights = readHighlights(p);
+    mutate(filters, highlights, p);
+    writeFilters(p, filters);
+    writeHighlights(p, highlights);
+    commitToken(p);
+    painted = { from: -1, to: -1 };
+    refresh(true);
+    renderPanel();
+    if (displayedChanged && (tokenParams().get("search") || "")) fetchMatches(false);
+  }
+
+  function tglBtn(label, on, cls, onClick) {
+    const b = document.createElement("button");
+    b.className = "tgl" + (cls ? " " + cls : "") + (on ? " on" : "");
+    b.textContent = label;
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  function renderPanel() {
+    const p = tokenParams();
+    const filters = readFilters(p);
+    const highlights = readHighlights(p);
+    modeToggle.textContent = p.get("mode") === "OR" ? "OR" : "AND";
+    modeToggle.classList.toggle("or", p.get("mode") === "OR");
+
+    filterList.textContent = "";
+    if (filters.length === 0) {
+      const e = document.createElement("div");
+      e.className = "empty";
+      e.textContent = "No filters";
+      filterList.appendChild(e);
+    }
+    filters.forEach((f, i) => {
+      const row = document.createElement("div");
+      row.className = "prow" + (f.enabled ? "" : " off");
+      const en = document.createElement("input");
+      en.type = "checkbox";
+      en.checked = f.enabled;
+      en.className = "en";
+      en.addEventListener("change", () =>
+        editLists((fs) => (fs[i].enabled = en.checked), true)
+      );
+      const term = document.createElement("span");
+      term.className = "term" + (f.negate ? " neg" : "");
+      term.textContent = f.term;
+      row.appendChild(en);
+      row.appendChild(term);
+      row.appendChild(tglBtn("Aa", f.case, "case", () => editLists((fs) => (fs[i].case = !fs[i].case), true)));
+      row.appendChild(tglBtn(".*", f.regex, "rx", () => editLists((fs) => (fs[i].regex = !fs[i].regex), true)));
+      row.appendChild(tglBtn("≠", f.negate, "neg", () => editLists((fs) => (fs[i].negate = !fs[i].negate), true)));
+      const rm = document.createElement("button");
+      rm.className = "rm";
+      rm.textContent = "×";
+      rm.addEventListener("click", () => editLists((fs) => fs.splice(i, 1), true));
+      row.appendChild(rm);
+      filterList.appendChild(row);
+    });
+
+    highlightList.textContent = "";
+    if (highlights.length === 0) {
+      const e = document.createElement("div");
+      e.className = "empty";
+      e.textContent = "No highlights";
+      highlightList.appendChild(e);
+    }
+    highlights.forEach((h, i) => {
+      const row = document.createElement("div");
+      row.className = "prow" + (h.enabled ? "" : " off");
+      const en = document.createElement("input");
+      en.type = "checkbox";
+      en.checked = h.enabled;
+      en.className = "en";
+      en.addEventListener("change", () => editLists((_f, hs) => (hs[i].enabled = en.checked), false));
+      const sw = document.createElement("span");
+      sw.className = "swatch";
+      sw.style.background = h.color;
+      const term = document.createElement("span");
+      term.className = "term";
+      term.textContent = h.term;
+      row.appendChild(en);
+      row.appendChild(sw);
+      row.appendChild(term);
+      row.appendChild(tglBtn("Aa", h.case, "case", () => editLists((_f, hs) => (hs[i].case = !hs[i].case), false)));
+      row.appendChild(tglBtn(".*", h.regex, "rx", () => editLists((_f, hs) => (hs[i].regex = !hs[i].regex), false)));
+      const rm = document.createElement("button");
+      rm.className = "rm";
+      rm.textContent = "×";
+      rm.addEventListener("click", () => editLists((_f, hs) => hs.splice(i, 1), false));
+      row.appendChild(rm);
+      highlightList.appendChild(row);
+    });
+  }
+
+  function addFilter() {
+    const term = searchInput.value.trim();
+    if (!term) return;
+    editLists((fs) => {
+      if (!fs.some((f) => f.term === term))
+        fs.push({ term, enabled: true, case: false, regex: state.regexOn, negate: false });
+    }, true);
+    searchInput.value = "";
+    searchClear.hidden = true;
+  }
+  function addHighlight() {
+    const term = searchInput.value.trim();
+    if (!term) return;
+    editLists((_f, hs) => {
+      if (!hs.some((h) => h.term === term))
+        hs.push({ term, case: false, regex: state.regexOn, enabled: true });
+    }, false);
+    searchInput.value = "";
+    searchClear.hidden = true;
+  }
+
   // ---- events ------------------------------------------------------------
+  $("filter-btn").addEventListener("click", addFilter);
+  $("highlight-btn").addEventListener("click", addHighlight);
+  modeToggle.addEventListener("click", () =>
+    editLists((_f, _h, p) => p.set("mode", p.get("mode") === "OR" ? "AND" : "OR"), true)
+  );
+  $("panel-toggle").addEventListener("click", function () {
+    const c = rightPanel.classList.toggle("collapsed");
+    this.textContent = c ? "◀" : "▶";
+    try {
+      localStorage.setItem("zerch-panel-collapsed", c ? "1" : "0");
+    } catch (_e) {}
+  });
   searchBtn.addEventListener("click", runSearch);
   searchClear.addEventListener("click", clearSearch);
   $("next-match").addEventListener("click", () => goMatch(1));
@@ -317,6 +523,14 @@
     state.regexOn = p.get("srx") === "1";
     regexToggle.classList.toggle("on", state.regexOn);
 
+    try {
+      if (localStorage.getItem("zerch-panel-collapsed") === "1") {
+        rightPanel.classList.add("collapsed");
+        $("panel-toggle").textContent = "◀";
+      }
+    } catch (_e) {}
+
+    renderPanel();
     layout();
     refresh(true);
     if (term) fetchMatches(true);

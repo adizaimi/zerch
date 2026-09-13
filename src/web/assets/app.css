@@ -65,6 +65,74 @@ body {
 .btn { border: none; border-radius: 3px; padding: 5px 10px; cursor: pointer; font-size: 13px; color: #fff; }
 .btn-search { background: #3498db; }
 .btn-search:hover { background: #2980b9; }
+.btn-filter { background: #27ae60; }
+.btn-filter:hover { background: #229954; }
+.btn-highlight { background: #9b59b6; }
+.btn-highlight:hover { background: #8e44ad; }
+
+/* ---- right panel -------------------------------------------------------- */
+.right-panel {
+  width: 320px;
+  flex-shrink: 0;
+  background: #fff;
+  border-left: 1px solid #ddd;
+  position: relative;
+  transition: width 0.2s;
+  overflow: hidden;
+}
+.right-panel.collapsed { width: 16px; }
+.panel-toggle {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 13px;
+  height: 70px;
+  border: none;
+  background: #3498db;
+  color: #fff;
+  cursor: pointer;
+  border-radius: 0 3px 3px 0;
+  font-size: 10px;
+  z-index: 2;
+}
+.panel-content { height: 100%; display: flex; flex-direction: column; padding-left: 16px; }
+.right-panel.collapsed .panel-content { display: none; }
+.panel-section {
+  padding: 10px;
+  border-bottom: 1px solid #ddd;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.section-title { font-size: 13px; font-weight: 600; color: #2c3e50; }
+.mode-toggle {
+  border: none; border-radius: 3px; color: #fff; font-size: 11px; font-weight: 600;
+  padding: 3px 8px; cursor: pointer; background: #9b59b6;
+}
+.mode-toggle.or { background: #e67e22; }
+
+.plist { display: flex; flex-direction: column; gap: 4px; }
+.prow {
+  display: flex; align-items: center; gap: 5px; font-size: 12px;
+  font-family: "Courier New", Courier, monospace;
+}
+.prow.off { opacity: 0.5; }
+.prow .term { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prow .term.neg { color: #e74c3c; text-decoration: line-through; }
+.prow .swatch { width: 20px; height: 14px; border-radius: 2px; flex-shrink: 0; border: 1px solid rgba(0,0,0,0.15); }
+.prow .tgl {
+  border: 1px solid #ccc; background: #fff; color: #7f8c8d; border-radius: 3px;
+  font-size: 11px; padding: 1px 4px; cursor: pointer; font-family: "Courier New", monospace;
+}
+.prow .tgl.on { color: #3498db; border-color: #3498db; }
+.prow .tgl.neg.on { color: #e74c3c; border-color: #e74c3c; }
+.prow .rm {
+  border: 1px solid #e74c3c; background: #fff; color: #e74c3c; border-radius: 50%;
+  width: 16px; height: 16px; line-height: 12px; cursor: pointer; font-size: 12px; padding: 0;
+}
+.plist .empty { color: #bdc3c7; font-size: 12px; font-family: -apple-system, sans-serif; }
 
 /* ---- log viewer / virtual list ----------------------------------------- */
 .main-content { flex: 1; overflow: hidden; display: flex; }
