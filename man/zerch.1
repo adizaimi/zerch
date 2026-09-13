@@ -1,4 +1,4 @@
-.TH ZERCH 1 "2026-07-07" "zerch 0.2.0" "User Commands"
+.TH ZERCH 1 "2026-09-13" "zerch 0.6.0" "User Commands"
 .SH NAME
 zerch \- a less-but-smarter terminal log viewer
 .SH SYNOPSIS
@@ -7,6 +7,9 @@ zerch \- a less-but-smarter terminal log viewer
 .RB [ \-\-view
 .IR string ]
 .RB [ \-\-fresh ]
+.RB [ \-\-web ]
+.RB [ \-\-web\-port
+.IR N ]
 .SH DESCRIPTION
 .B zerch
 is a terminal log viewer with search, filters, highlights, bookmarks, and
@@ -24,6 +27,20 @@ saved session.
 .B \-\-fresh
 Open the file clean, ignoring its saved session (see
 .BR SESSIONS ).
+.TP
+.B \-\-web
+Open the log in a local browser tab instead of the terminal UI, reusing the same
+engine and view model (see
+.BR "WEB UI" ).
+.TP
+.BI \-\-web\-port " N"
+Bind the
+.B \-\-web
+server to port
+.IR N
+(implies
+.BR \-\-web ).
+The default is an ephemeral port.
 .TP
 .BR \-h ", " \-\-help
 Print a short usage summary and exit.
@@ -110,6 +127,25 @@ Quit (press
 twice, or
 .BR ^C ,
 to exit immediately).
+.SH WEB UI
+With
+.BR \-\-web ,
+zerch serves the log to a local browser tab over loopback\-only HTTP instead of
+drawing the terminal UI. It offers clickable filters, highlights, bookmarks,
+search, a minimap, and hide/reveal, reusing the same engine and view model. The
+entire view is encoded in the page URL as the same
+.B \-\-view
+token, so every view is a shareable link and each browser tab is independent.
+The server binds
+.B 127.0.0.1
+only, prints its URL, and attempts to open the browser
+.RB ( open ", " xdg\-open ", or " "cmd /c start" );
+if no opener is found the URL is still printed. Stop it with Ctrl\-C.
+.PP
+.B \-\-web
+serves over plain HTTP with no authentication: any local process or user
+that can reach the port can read the log. It is intended for a single\-user
+local machine, not a shared host.
 .SH SESSIONS
 Each file's view \(em filters, highlights, bookmarks, hidden lines, search, and
 the cursor line \(em is saved on exit and restored on the next

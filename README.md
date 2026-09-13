@@ -2,7 +2,7 @@
 
 A `less`-but-smarter terminal log viewer — search, filters, highlights, bookmarks,
 log-level / timestamp awareness, and a time histogram — as a single small native
-binary (~1.8 MB, links only the system C library).
+binary (~2.1 MB, links only the system C library).
 
 This is Command Line Tool written in Rust with the goal of being fast and responsive,
 as well as safe and small executable.
@@ -20,6 +20,7 @@ Design goals:
 
 ```
 zerch <logfile> [--view <string>]
+zerch <logfile> --web       # open in a local browser tab instead of the TUI
 zerch -                     # read log from stdin (explicit)
 <cmd> | zerch               # read log from stdin (implicit; less-style)
 ```
@@ -56,6 +57,30 @@ path and stored (private, `0600`) under `$XDG_STATE_HOME/zerch/sessions/`.
 - `ZERCH_NO_SESSION=1` disables saving and restoring entirely.
 
 Piped/stdin input has no session (there's no stable file to key on).
+
+### Web UI (`--web`)
+
+`zerch <file> --web` opens the log in a local browser tab instead of the TUI, reusing
+the same engine and view model. It's a fast local viewer with clickable filters,
+highlights, bookmarks, search, a minimap, and hide/reveal — not a remote/multi-user
+server.
+
+```
+zerch app.log --web                 # bind an ephemeral loopback port, open the browser
+zerch app.log --web --web-port 8080 # pin the port
+kubectl logs pod | zerch --web      # piped input works too (no session)
+```
+
+The whole view (filters, highlights, bookmarks, revealed ranges, search) lives in the
+URL as the same `--view` token the TUI uses, so **every view is a shareable link** —
+copy the URL, or open it in a second tab for an independent view. The server binds
+`127.0.0.1` only and prints the URL; if no browser opener is found the URL is still
+printed. Stop it with Ctrl+C.
+
+> **Security:** `--web` serves over plain loopback HTTP with no authentication — any
+> local process or user on the machine that can reach the port can read the log
+> (the same trust boundary as the file itself). It is meant for a single-user local
+> machine, not a shared host.
 
 ## Keys
 
@@ -144,7 +169,7 @@ licenses). `Depends:` is derived automatically from the linked libraries.
 
 ```
 cargo install cargo-deb
-cargo deb            # → target/debian/zerch_0.5.1_<arch>.deb
+cargo deb            # → target/debian/zerch_0.6.0_<arch>.deb
 sudo apt install ./target/debian/zerch_*.deb
 ```
 
@@ -155,7 +180,7 @@ A debhelper source package lives in `debian/` (required at the repo root by
 
 ```
 sudo apt install devscripts debhelper cargo rustc
-dpkg-buildpackage -us -uc -b     # → ../zerch_0.5.1_<arch>.deb
+dpkg-buildpackage -us -uc -b     # → ../zerch_0.6.0_<arch>.deb
 ```
 
 `cargo` fetches the crate dependencies during the build, so the build host needs
