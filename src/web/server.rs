@@ -36,7 +36,7 @@ fn handle(state: &State, req: Request) {
     let path = parts.next().unwrap_or("/");
     let query = parts.next().unwrap_or("");
     match path {
-        "/" => respond(req, 200, "text/html; charset=utf-8", index_page(state)),
+        "/" => respond(req, 200, "text/html; charset=utf-8", index_page(state, query)),
         "/app.css" => respond(req, 200, "text/css; charset=utf-8", assets::APP_CSS.to_string()),
         "/app.js" => respond(
             req,
@@ -46,6 +46,14 @@ fn handle(state: &State, req: Request) {
         ),
         "/rows" => {
             let (status, body) = handlers::rows(state, &parse_query(query));
+            respond(req, status, "application/json; charset=utf-8", body);
+        }
+        "/matches" => {
+            let (status, body) = handlers::matches(state, &parse_query(query));
+            respond(req, status, "application/json; charset=utf-8", body);
+        }
+        "/goto" => {
+            let (status, body) = handlers::goto(state, &parse_query(query));
             respond(req, status, "application/json; charset=utf-8", body);
         }
         _ => respond(req, 404, "text/plain; charset=utf-8", "not found\n".to_string()),
@@ -59,14 +67,21 @@ fn parse_query(query: &str) -> HashMap<String, String> {
         .collect()
 }
 
-/// Serve `index.html` with the bootstrap object injected as JSON. `</` is escaped to
-/// `<\/` so a file name (or, later, log content) containing `</script>` can't break
+/// Serve `index.html` with the bootstrap object injected as JSON. The seed view is
+/// the request's own query string when present (so a shared URL restores that exact
+/// view), else the token resolved at startup (`--view` / saved session). `</` is
+/// escaped to `<\/` so a file name or log content containing `</script>` can't break
 /// out of the `<script type="application/json">` block.
-fn index_page(state: &State) -> String {
+fn index_page(state: &State, query: &str) -> String {
+    let view = if query.is_empty() {
+        state.initial_view.clone()
+    } else {
+        query.to_string()
+    };
     let boot = serde_json::json!({
         "file": state.file_name,
         "total": state.index.total_lines(),
-        "view": state.initial_view,
+        "view": view,
     })
     .to_string()
     .replace("</", "<\\/");

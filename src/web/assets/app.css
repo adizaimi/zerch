@@ -30,6 +30,42 @@ body {
 #file-name { color: #3498db; }
 .muted { color: #95a5a6; font-size: 13px; }
 
+.header-right { display: flex; align-items: center; gap: 8px; }
+
+/* match counter */
+.match-counter { display: flex; align-items: center; gap: 4px; font-size: 13px; }
+.match-counter .nav {
+  background: #34495e; color: #fff; border: none; border-radius: 3px;
+  width: 22px; height: 22px; cursor: pointer; font-size: 14px; line-height: 1;
+}
+.match-counter .nav:hover { background: #3d5a73; }
+#match-n { min-width: 44px; text-align: center; color: #ecf0f1; }
+
+/* regex toggle */
+.regex-toggle {
+  font-family: "Courier New", monospace; font-size: 13px;
+  background: none; border: 1px solid #4a6076; color: #95a5a6;
+  border-radius: 3px; padding: 3px 6px; cursor: pointer;
+}
+.regex-toggle.on { color: #3498db; border-color: #3498db; }
+
+/* search box */
+.search-wrap { position: relative; display: inline-flex; align-items: center; }
+.search-input {
+  width: 200px; background: #34495e; color: #fff; border: 1px solid #4a6076;
+  border-radius: 3px; padding: 4px 22px 4px 8px; font-size: 13px;
+}
+.search-input::placeholder { color: #7f8c8d; }
+.search-input.error { border-color: #e74c3c; }
+.search-clear {
+  position: absolute; right: 4px; background: none; border: none; cursor: pointer;
+  color: #95a5a6; font-size: 16px; line-height: 1;
+}
+
+.btn { border: none; border-radius: 3px; padding: 5px 10px; cursor: pointer; font-size: 13px; color: #fff; }
+.btn-search { background: #3498db; }
+.btn-search:hover { background: #2980b9; }
+
 /* ---- log viewer / virtual list ----------------------------------------- */
 .main-content { flex: 1; overflow: hidden; display: flex; }
 .log-viewer {
@@ -81,8 +117,9 @@ body {
 /* highlight lanes (background); highlight color is inline. selected-text (teal)
    is added client-side in a later commit. */
 .line-content .s { background: #fff9c4; }          /* search match */
-.line-content .s-cur { background: #fdd835; font-weight: bold; } /* current match */
+.line-content .s.s-cur { background: #fdd835; font-weight: bold; } /* current match */
 .line-content .f { background: #d6eaf8; }          /* filter match */
+.line-content .sel { background: #b2dfdb; }        /* selected-text (teal) */
 
 /* ---- gap rows ----------------------------------------------------------- */
 .gap-row {

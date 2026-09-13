@@ -17,6 +17,18 @@
         <span class="viewing">Viewing: <span id="file-name"></span></span>
       </div>
       <div class="header-right">
+        <span id="match-counter" class="match-counter" hidden>
+          <button id="prev-match" class="nav" title="Previous match (N)">‹</button>
+          <span id="match-n"></span>
+          <button id="next-match" class="nav" title="Next match (n)">›</button>
+        </span>
+        <button id="regex-toggle" class="regex-toggle" title="Regular expression">.*</button>
+        <span class="search-wrap">
+          <input id="search" class="search-input" type="text" placeholder="Search..."
+                 autocomplete="off" spellcheck="false" />
+          <button id="search-clear" class="search-clear" title="Clear" hidden>×</button>
+        </span>
+        <button id="search-btn" class="btn btn-search">Search</button>
         <span id="total-lines" class="muted"></span>
       </div>
     </header>

@@ -20,11 +20,13 @@ fn syntax_hex(t: SyntaxTok) -> &'static str {
     }
 }
 
-// Background lane for a character, lowest to highest priority.
+// Background lane for a character, lowest to highest priority:
+// filter < selected-text < highlight < search.
 #[derive(Clone, PartialEq)]
 enum Bg {
     None,
     Filter,
+    Selected,
     Highlight(String),
     Search,
 }
@@ -46,9 +48,10 @@ pub fn escape_html(s: &str) -> String {
 }
 
 /// Inner HTML of a line's `.line-content`: escaped text in `<span>`s carrying the
-/// background lane (class `s`/`f` or inline highlight colour) and optional syntax
-/// foreground colour.
-pub fn line_html(view: &ViewState, text: &str) -> String {
+/// background lane (class `s`/`f`/`sel` or inline highlight colour) and optional
+/// syntax foreground colour. `selected` is the transient client text selection
+/// (teal lane) — passed per-request, never part of the shareable view token.
+pub fn line_html(view: &ViewState, text: &str, selected: Option<&str>) -> String {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     if n == 0 {
@@ -80,7 +83,17 @@ pub fn line_html(view: &ViewState, text: &str) -> String {
             }
         }
     }
-    // Highlights (earlier highlight wins on overlap; overwrites the lower filter lane).
+    // Selected text (client selection), literal case-insensitive — over filter.
+    if let Some(sel) = selected {
+        if !sel.is_empty() {
+            for (s, e) in match_ranges(text, sel, false, false) {
+                for slot in bg.iter_mut().take(e.min(n)).skip(s.min(n)) {
+                    *slot = Bg::Selected;
+                }
+            }
+        }
+    }
+    // Highlights (earlier highlight wins on overlap; overwrites the lower lanes).
     for h in &view.highlights {
         if !h.enabled || h.term.is_empty() {
             continue;
@@ -124,6 +137,7 @@ fn push_span(out: &mut String, seg: &str, fg: Option<&str>, bg: &Bg) {
     match bg {
         Bg::None => {}
         Bg::Filter => class = "f",
+        Bg::Selected => class = "sel",
         Bg::Search => class = "s",
         Bg::Highlight(c) => {
             class = "h";
@@ -182,13 +196,13 @@ mod tests {
 
     #[test]
     fn plain_text_has_no_spans() {
-        assert_eq!(line_html(&v(), "hello world"), "hello world");
+        assert_eq!(line_html(&v(), "hello world", None), "hello world");
     }
 
     #[test]
     fn escapes_untrusted_text() {
         assert_eq!(
-            line_html(&v(), "a <script>&\"'"),
+            line_html(&v(), "a <script>&\"'", None),
             "a &lt;script&gt;&amp;&quot;&#39;"
         );
     }
@@ -196,7 +210,7 @@ mod tests {
     #[test]
     fn search_lane_wraps_matches() {
         let view = ViewState { search: "err".into(), ..v() };
-        assert_eq!(line_html(&view, "an err here"), "an <span class=\"s\">err</span> here");
+        assert_eq!(line_html(&view, "an err here", None), "an <span class=\"s\">err</span> here");
     }
 
     #[test]
@@ -212,7 +226,7 @@ mod tests {
             ..v()
         };
         assert_eq!(
-            line_html(&view, "ok!"),
+            line_html(&view, "ok!", None),
             "<span class=\"h\" style=\"background-color:#81c784;\">ok</span>!"
         );
     }
@@ -230,7 +244,7 @@ mod tests {
             }],
             ..v()
         };
-        assert_eq!(line_html(&view, "abc"), "<span class=\"s\">abc</span>");
+        assert_eq!(line_html(&view, "abc", None), "<span class=\"s\">abc</span>");
     }
 
     #[test]
@@ -245,7 +259,7 @@ mod tests {
             }],
             ..v()
         };
-        assert_eq!(line_html(&view, "no"), "no");
+        assert_eq!(line_html(&view, "no", None), "no");
     }
 
     #[test]
@@ -260,6 +274,18 @@ mod tests {
             }],
             ..v()
         };
-        assert_eq!(line_html(&view, "yes!"), "<span class=\"f\">yes</span>!");
+        assert_eq!(line_html(&view, "yes!", None), "<span class=\"f\">yes</span>!");
+    }
+
+    #[test]
+    fn selected_text_teal_lane_over_filter_under_search() {
+        // Selected wraps in .sel, case-insensitive and literal.
+        assert_eq!(
+            line_html(&v(), "Foo foo", Some("foo")),
+            "<span class=\"sel\">Foo</span> <span class=\"sel\">foo</span>"
+        );
+        // Search still wins over a selection on the same text.
+        let view = ViewState { search: "foo".into(), ..v() };
+        assert_eq!(line_html(&view, "foo", Some("foo")), "<span class=\"s\">foo</span>");
     }
 }
