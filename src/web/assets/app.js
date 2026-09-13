@@ -53,6 +53,9 @@
     matchIdx: -1,
     bmIdx: -1,
     bookmarkPos: [],
+    visiblePos: [],
+    selectedPos: -1,
+    hscrolledMatch: -1,
     selectedText: "",
     regexOn: false,
     counts: { filters: [], highlights: [] },
@@ -97,7 +100,7 @@
     spacer.style.height = Math.max(domH, 1) + "px";
   }
 
-  function makeRow(item, index, topPx, isCurrent, bmSet) {
+  function makeRow(item, index, topPx, isCurrent, bmSet, selLine) {
     if (item.t === "g") {
       const g = document.createElement("div");
       g.className = "gap-row";
@@ -130,9 +133,14 @@
     }
     const bookmarked = bmSet.has(item.n);
     const row = document.createElement("div");
-    row.className = "line-row" + (index % 2 === 1 ? " zebra" : "") + (bookmarked ? " bookmarked" : "");
+    row.className =
+      "line-row" +
+      (index % 2 === 1 ? " zebra" : "") +
+      (bookmarked ? " bookmarked" : "") +
+      (item.n === selLine ? " selected" : "");
     row.style.top = topPx + "px";
     row.dataset.n = item.n;
+    row.addEventListener("dblclick", () => setSelected(item.n));
 
     const gutter = document.createElement("div");
     gutter.className = "line-number";
@@ -189,14 +197,25 @@
         ? state.matches[state.matchIdx]
         : -1;
     const bmSet = new Set(parseRangeSpec(tokenParams().get("bookmarks")));
+    const selLine = parseInt(tokenParams().get("selected") || "", 10);
     const frag = document.createDocumentFragment();
+    let curRow = null;
     for (let k = 0; k < rows.length; k++) {
       const index = from + k;
       const topPx = domTop + (index * ROW_H - virtualTop);
-      frag.appendChild(makeRow(rows[k], index, topPx, index === curPos, bmSet));
+      const node = makeRow(rows[k], index, topPx, index === curPos, bmSet, selLine);
+      if (index === curPos) curRow = node;
+      frag.appendChild(node);
     }
     rowsEl.textContent = "";
     rowsEl.appendChild(frag);
+    // Bring the current search match into horizontal view (once per match change),
+    // so a hit far to the right of a long line is visible.
+    if (curRow && curPos !== state.hscrolledMatch) {
+      state.hscrolledMatch = curPos;
+      const mark = curRow.querySelector(".s-cur");
+      if (mark) mark.scrollIntoView({ inline: "center", block: "nearest" });
+    }
   }
 
   function refresh(force) {
@@ -257,8 +276,13 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
     const total = Math.max(state.total, 1);
-    drawLane(ctx, state.bookmarkPos, 0, "#f1c40f", total, H);
-    drawLane(ctx, state.matches, 6, "#e67e22", total, H);
+    drawLane(ctx, state.bookmarkPos, 0, "#f1c40f", total, H); // bookmarks (gold)
+    drawLane(ctx, state.matches, 6, "#e67e22", total, H); // search matches (orange)
+    drawLane(ctx, state.visiblePos, 12, "#16a085", total, H); // revealed ranges (teal)
+    if (state.selectedPos >= 0) {
+      ctx.fillStyle = "#2980b9"; // selected line (blue, full width)
+      ctx.fillRect(0, Math.floor((state.selectedPos / total) * H), W, 2);
+    }
     // viewport box
     const topPos = (scroller.scrollTop * scale) / ROW_H;
     const y = (topPos / total) * H;
@@ -268,23 +292,32 @@
     ctx.strokeStyle = "rgba(41,128,185,0.55)";
     ctx.strokeRect(0.5, y + 0.5, W - 1, Math.max(1, h - 1));
   }
-  function resolveBookmarkPositions() {
-    const bms = parseRangeSpec(tokenParams().get("bookmarks"));
-    if (!bms.length) {
+  // Resolve the bookmark / visible-range / selected-line positions for the minimap
+  // in one /positions request (raw line numbers -> displayed positions).
+  function resolveMarkers() {
+    const p = tokenParams();
+    const bms = parseRangeSpec(p.get("bookmarks"));
+    const vis = parseRangeSpec(p.get("visible"));
+    const sel = parseInt(p.get("selected") || "", 10);
+    const lines = [...new Set([...bms, ...vis, ...(isNaN(sel) ? [] : [sel])])];
+    if (!lines.length) {
       state.bookmarkPos = [];
+      state.visiblePos = [];
+      state.selectedPos = -1;
       drawMinimap();
       return;
     }
-    Promise.all(
-      bms.map((n) =>
-        fetch("/goto?view=" + encodeURIComponent(state.view) + "&line=" + n)
-          .then((r) => (r.ok ? r.json() : null))
-          .catch(() => null)
-      )
-    ).then((res) => {
-      state.bookmarkPos = res.filter(Boolean).map((d) => d.pos).sort((a, b) => a - b);
-      drawMinimap();
-    });
+    fetch("/positions?view=" + encodeURIComponent(state.view) + "&lines=" + lines.join(","))
+      .then((r) => r.json())
+      .then((d) => {
+        const m = d.positions || {};
+        const at = (l) => (m[l] != null ? m[l] : null);
+        state.bookmarkPos = bms.map(at).filter((x) => x != null).sort((a, b) => a - b);
+        state.visiblePos = vis.map(at).filter((x) => x != null).sort((a, b) => a - b);
+        state.selectedPos = !isNaN(sel) && m[sel] != null ? m[sel] : -1;
+        drawMinimap();
+      })
+      .catch(() => {});
   }
   minimap.addEventListener("click", function (e) {
     const rect = minimap.getBoundingClientRect();
@@ -342,8 +375,79 @@
     updateCounter();
   }
 
+  // ---- recent-search history (localStorage, like the TUI's history) ------
+  const HKEY = "zerch-search-history";
+  const searchHistoryEl = $("search-history");
+  function loadHistory() {
+    try {
+      return JSON.parse(localStorage.getItem(HKEY) || "[]");
+    } catch (_e) {
+      return [];
+    }
+  }
+  function saveHistory(list) {
+    try {
+      localStorage.setItem(HKEY, JSON.stringify(list.slice(0, 100)));
+    } catch (_e) {}
+  }
+  function rememberTerm(term) {
+    if (!term) return;
+    const list = loadHistory().filter((t) => t !== term);
+    list.unshift(term);
+    saveHistory(list);
+  }
+  function showHistory() {
+    const q = searchInput.value.toLowerCase();
+    const list = loadHistory().filter((t) => !q || t.toLowerCase().includes(q));
+    searchHistoryEl.textContent = "";
+    if (list.length === 0) {
+      searchHistoryEl.hidden = true;
+      return;
+    }
+    list.forEach((term) => {
+      const row = document.createElement("div");
+      row.className = "sh-item";
+      const t = document.createElement("span");
+      t.className = "t";
+      t.textContent = term;
+      const x = document.createElement("button");
+      x.className = "x";
+      x.textContent = "×";
+      // mousedown, not click, so the action beats the input's blur.
+      row.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        searchInput.value = term;
+        searchClear.hidden = false;
+        hideHistory();
+        runSearch();
+      });
+      x.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        saveHistory(loadHistory().filter((h) => h !== term));
+        showHistory();
+      });
+      row.appendChild(t);
+      row.appendChild(x);
+      searchHistoryEl.appendChild(row);
+    });
+    const foot = document.createElement("div");
+    foot.className = "sh-foot";
+    foot.textContent = "Clear history";
+    foot.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      saveHistory([]);
+      hideHistory();
+    });
+    searchHistoryEl.appendChild(foot);
+    searchHistoryEl.hidden = false;
+  }
+  const hideHistory = () => (searchHistoryEl.hidden = true);
+
   function runSearch() {
     const term = searchInput.value;
+    rememberTerm(term.trim());
+    hideHistory();
     const p = tokenParams();
     if (term) p.set("search", term);
     else p.delete("search");
@@ -622,7 +726,7 @@
     painted = { from: -1, to: -1 };
     refresh(true);
     renderPanel();
-    resolveBookmarkPositions();
+    resolveMarkers();
     if (tokenParams().get("search") || "") fetchMatches(false);
   }
   function toggleBookmark(n) {
@@ -645,6 +749,17 @@
   }
   const revealContext = (n) =>
     revealRange(Math.max(1, n - 5), Math.min(state.fileLines, n + 5));
+
+  // Double-click anchors a line as the "selected" cursor line (persisted in the
+  // token, so it rides along in a shared URL — matching the TUI's cursor line).
+  function setSelected(n) {
+    const p = tokenParams();
+    p.set("selected", String(n));
+    commitToken(p);
+    painted = { from: -1, to: -1 };
+    refresh(true);
+    resolveMarkers();
+  }
 
   function gotoLine(line) {
     fetch("/goto?view=" + encodeURIComponent(state.view) + "&line=" + line)
@@ -674,7 +789,17 @@
       rangeList.appendChild(e);
       return;
     }
-    bms.forEach((n) => rangeList.appendChild(rangeRow("★", n, () => toggleBookmark(n), n)));
+    bms.forEach((n) =>
+      rangeList.appendChild(
+        rangeRow("★", n, () => toggleBookmark(n), n, () =>
+          // ★ → move this bookmark to a plain revealed line.
+          editSets((st) => {
+            st.bookmarks.delete(n);
+            st.visible.add(n);
+          })
+        )
+      )
+    );
     // Coalesce visible lines into run labels for display.
     encodeRuns(vis)
       .split(",")
@@ -682,18 +807,31 @@
       .forEach((label) => {
         const first = +label.split("-")[0];
         rangeList.appendChild(
-          rangeRow("▷", label, () =>
-            editSets((st) => parseRangeSpec(label).forEach((n) => st.visible.delete(n)))
-          , first)
+          rangeRow(
+            "☆",
+            label,
+            () => editSets((st) => parseRangeSpec(label).forEach((n) => st.visible.delete(n))),
+            first,
+            () =>
+              // ☆ → promote this revealed run to bookmarks.
+              editSets((st) =>
+                parseRangeSpec(label).forEach((n) => {
+                  st.visible.delete(n);
+                  st.bookmarks.add(n);
+                })
+              )
+          )
         );
       });
   }
-  function rangeRow(icon, label, onRemove, jumpLine) {
+  function rangeRow(icon, label, onRemove, jumpLine, onToggleKind) {
     const row = document.createElement("div");
     row.className = "prow";
-    const ic = document.createElement("span");
+    const ic = document.createElement("button");
     ic.className = "star-btn";
     ic.textContent = icon;
+    ic.title = icon === "★" ? "Convert to a revealed range" : "Promote to a bookmark";
+    ic.addEventListener("click", onToggleKind);
     const term = document.createElement("span");
     term.className = "term";
     term.textContent = " " + label;
@@ -818,14 +956,21 @@
   });
   searchInput.addEventListener("input", function () {
     searchClear.hidden = !searchInput.value;
+    showHistory();
   });
+  searchInput.addEventListener("focus", showHistory);
+  searchInput.addEventListener("blur", () => setTimeout(hideHistory, 120));
   searchInput.addEventListener("keydown", function (e) {
     if (e.key === "Enter") {
       e.preventDefault();
       runSearch();
     } else if (e.key === "Escape") {
-      clearSearch();
-      searchInput.blur();
+      if (!searchHistoryEl.hidden) {
+        hideHistory();
+      } else {
+        clearSearch();
+        searchInput.blur();
+      }
     }
   });
 
@@ -919,7 +1064,7 @@
     fetchCounts();
     layout();
     refresh(true);
-    resolveBookmarkPositions();
+    resolveMarkers();
     if (term) fetchMatches(true);
   })();
 })();

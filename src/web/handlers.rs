@@ -242,6 +242,44 @@ pub fn goto(state: &State, q: &HashMap<String, String>) -> (u16, String) {
     }
 }
 
+/// `GET /positions?view=&lines=a,b,c` — displayed positions of the given raw lines
+/// (hidden/out-of-range lines are omitted), as a `{ "<line>": pos }` map. Lets the
+/// minimap resolve the bookmark / visible-range / selected lanes in one request.
+pub fn positions(state: &State, q: &HashMap<String, String>) -> (u16, String) {
+    let token = q.get("view").cloned().unwrap_or_default();
+    let view = parse_view(&token);
+    let displayed = displayed_for(state, &token, &view);
+    let lines: Vec<usize> = q
+        .get("lines")
+        .map(|s| s.split(',').filter_map(|t| t.trim().parse::<usize>().ok()).collect())
+        .unwrap_or_default();
+
+    let mut out = serde_json::Map::new();
+    match &*displayed {
+        Displayed::All(n) => {
+            for l in lines {
+                if l >= 1 && l <= *n {
+                    out.insert(l.to_string(), serde_json::json!(l - 1));
+                }
+            }
+        }
+        Displayed::Items(v) => {
+            let mut line_to_pos: HashMap<usize, usize> = HashMap::new();
+            for (i, it) in v.iter().enumerate() {
+                if let DisplayedItem::Line(x) = it {
+                    line_to_pos.insert(*x, i);
+                }
+            }
+            for l in lines {
+                if let Some(&p) = line_to_pos.get(&l) {
+                    out.insert(l.to_string(), serde_json::json!(p));
+                }
+            }
+        }
+    }
+    (200, serde_json::json!({ "positions": out }).to_string())
+}
+
 /// `GET /counts?view=` — whole-file hit count per filter and per highlight term (in
 /// order), for the panel badges. Mirrors the TUI's per-term counts (unscoped).
 pub fn counts(state: &State, q: &HashMap<String, String>) -> (u16, String) {

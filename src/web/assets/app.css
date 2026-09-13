@@ -61,6 +61,17 @@ body {
   position: absolute; right: 4px; background: none; border: none; cursor: pointer;
   color: #95a5a6; font-size: 16px; line-height: 1;
 }
+.search-history {
+  position: absolute; top: 100%; left: 0; right: 0; margin-top: 2px; z-index: 20;
+  background: #2c3e50; border-radius: 4px; max-height: 260px; overflow-y: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3); font-size: 13px;
+}
+.sh-item { display: flex; align-items: center; justify-content: space-between; padding: 5px 10px; cursor: pointer; }
+.sh-item:hover { background: #34495e; }
+.sh-item .t { color: #ecf0f1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sh-item .x { color: #95a5a6; border: none; background: none; cursor: pointer; font-size: 14px; }
+.sh-foot { text-align: center; color: #95a5a6; padding: 5px; cursor: pointer; border-top: 1px solid #34495e; }
+.sh-foot:hover { color: #e74c3c; }
 
 .btn { border: none; border-radius: 3px; padding: 5px 10px; cursor: pointer; font-size: 13px; color: #fff; }
 .btn-search { background: #3498db; }
@@ -242,6 +253,7 @@ kbd {
 .line-row.zebra { background: #f9f9f9; }
 .no-zebra .line-row.zebra { background: #fff; }
 .line-row.bookmarked { background: #fff9e6; }
+.line-row.selected { background: #e0e0e0; }
 .line-number { position: relative; cursor: pointer; }
 .line-row.bookmarked .line-number { background: #ffe4b3; color: #d68910; }
 .line-number .star { position: absolute; left: 3px; color: #f39c12; }
