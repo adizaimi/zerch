@@ -9,6 +9,8 @@
 //! `run` mirrors `tui::run`'s shape so `main.rs` dispatches with a one-line branch.
 
 mod assets;
+mod handlers;
+mod render;
 mod server;
 
 use std::io;
@@ -18,6 +20,12 @@ use std::sync::{Arc, Mutex};
 use crate::engine::index::LineIndex;
 use crate::session;
 use crate::view::state::{serialize_view, ViewState};
+
+use handlers::Displayed;
+
+/// Displayed-sequence cache capacity: "current view + the edit you just made", a
+/// couple of tabs' worth. A pure, evictable memoisation — never per-tab state.
+const CACHE_CAP: usize = 4;
 
 /// Shared, mostly-immutable server state. The index is read-only (no lock); the two
 /// `Mutex`es are the only mutable state — `last_saved` gates redundant session writes.
@@ -33,6 +41,8 @@ pub struct State {
     pub last_saved: Mutex<Option<String>>,
     /// The seed token served to `GET /` (from `--view` or the restored session).
     pub initial_view: String,
+    /// Token-keyed LRU of computed displayed sequences (front = most recent).
+    pub cache: Mutex<Vec<(String, Arc<Displayed>)>>,
 }
 
 /// Run the web UI. Binds loopback HTTP, opens the browser, and blocks in the request
@@ -64,11 +74,12 @@ pub fn run(
         session_key,
         last_saved: Mutex::new(None),
         initial_view: initial_token,
+        cache: Mutex::new(Vec::new()),
     });
 
     let addr = format!("127.0.0.1:{}", port.unwrap_or(0));
-    let server = tiny_http::Server::http(&addr)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let server =
+        tiny_http::Server::http(&addr).map_err(|e| io::Error::other(e.to_string()))?;
     let bound_port = server.server_addr().to_ip().map(|s| s.port()).unwrap_or(0);
     let url = format!("http://127.0.0.1:{bound_port}");
     eprintln!("zerch: web UI at {url}");

@@ -2,11 +2,13 @@
 //! calls a handler, and writes the response. A small fixed worker pool lets a few
 //! requests (e.g. parallel row fetches from one tab) proceed concurrently.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tiny_http::{Header, Request, Response, Server};
 
 use super::assets;
+use super::handlers;
 use super::State;
 
 /// Spawn `workers` threads, each blocking on `incoming_requests`, and join them.
@@ -28,9 +30,11 @@ pub fn serve(server: Arc<Server>, state: Arc<State>, workers: usize) {
 }
 
 fn handle(state: &State, req: Request) {
-    // req.url() includes the query string; route on the path only.
+    // req.url() includes the query string; route on the path, parse the query lazily.
     let url = req.url().to_string();
-    let path = url.split('?').next().unwrap_or("/");
+    let mut parts = url.splitn(2, '?');
+    let path = parts.next().unwrap_or("/");
+    let query = parts.next().unwrap_or("");
     match path {
         "/" => respond(req, 200, "text/html; charset=utf-8", index_page(state)),
         "/app.css" => respond(req, 200, "text/css; charset=utf-8", assets::APP_CSS.to_string()),
@@ -40,8 +44,19 @@ fn handle(state: &State, req: Request) {
             "text/javascript; charset=utf-8",
             assets::APP_JS.to_string(),
         ),
+        "/rows" => {
+            let (status, body) = handlers::rows(state, &parse_query(query));
+            respond(req, status, "application/json; charset=utf-8", body);
+        }
         _ => respond(req, 404, "text/plain; charset=utf-8", "not found\n".to_string()),
     }
+}
+
+/// Decode a URL query string into a map (form-urlencoded, last value wins).
+fn parse_query(query: &str) -> HashMap<String, String> {
+    form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect()
 }
 
 /// Serve `index.html` with the bootstrap object injected as JSON. `</` is escaped to

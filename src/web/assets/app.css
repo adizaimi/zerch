@@ -1,9 +1,8 @@
 /* zerch web UI — light theme, mirroring ~/zercher/src/client. Colors are
-   hard-coded hex (no dark mode), fonts are system-UI for chrome and Courier for
-   log content. This file grows as the UI lands; commit 2 is the scaffold. */
+   hard-coded hex (no dark mode); chrome uses system-UI, log content uses Courier
+   New 13px. This file grows as the UI lands. */
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
-
 html, body { height: 100%; }
 
 body {
@@ -15,6 +14,7 @@ body {
 
 #app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
+/* ---- header ------------------------------------------------------------- */
 .header {
   display: flex;
   align-items: center;
@@ -22,6 +22,7 @@ body {
   padding: 5px 15px;
   background: #2c3e50;
   color: #fff;
+  flex-shrink: 0;
 }
 .header-left { display: flex; align-items: baseline; gap: 12px; }
 .header h1 { font-size: 18px; font-weight: 600; }
@@ -29,5 +30,75 @@ body {
 #file-name { color: #3498db; }
 .muted { color: #95a5a6; font-size: 13px; }
 
-.main-content { flex: 1; overflow: hidden; padding: 20px; }
-.placeholder { color: #7f8c8d; font-size: 14px; }
+/* ---- log viewer / virtual list ----------------------------------------- */
+.main-content { flex: 1; overflow: hidden; display: flex; }
+.log-viewer {
+  flex: 1;
+  position: relative;
+  background: #fff;
+  margin: 10px 0 10px 10px;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+.scroller { position: absolute; inset: 0; overflow: auto; }
+.spacer { position: relative; width: 1px; }         /* sizes the scrollbar */
+.rows { position: absolute; top: 0; left: 0; right: 0; }
+
+.scroller::-webkit-scrollbar { width: 10px; height: 10px; }
+.scroller::-webkit-scrollbar-track { background: #f1f1f1; }
+.scroller::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 5px; }
+
+/* ---- rows --------------------------------------------------------------- */
+.line-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 24px;
+  display: flex;
+  align-items: stretch;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 13px;
+  line-height: 24px;
+  border-bottom: 1px solid #ecf0f1;
+  background: #fff;
+  white-space: pre;
+}
+.line-row.zebra { background: #f9f9f9; }
+
+.line-number {
+  flex: 0 0 var(--gutter-width, 80px);
+  width: var(--gutter-width, 80px);
+  text-align: right;
+  padding: 0 8px 0 6px;
+  color: #7f8c8d;
+  background: #ecf0f1;
+  border-right: 2px solid #ddd;
+  user-select: none;
+}
+.line-content { flex: 1; padding: 0 8px; overflow: hidden; }
+
+/* highlight lanes (background); highlight color is inline. selected-text (teal)
+   is added client-side in a later commit. */
+.line-content .s { background: #fff9c4; }          /* search match */
+.line-content .s-cur { background: #fdd835; font-weight: bold; } /* current match */
+.line-content .f { background: #d6eaf8; }          /* filter match */
+
+/* ---- gap rows ----------------------------------------------------------- */
+.gap-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f5f5f5;
+  border-top: 1px dashed #cfd8dc;
+  border-bottom: 1px dashed #cfd8dc;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 11px;
+  font-style: italic;
+  color: #90a4ae;
+  user-select: none;
+}
