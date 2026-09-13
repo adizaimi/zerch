@@ -81,6 +81,7 @@ fn index_page(state: &State, query: &str) -> String {
     let boot = serde_json::json!({
         "file": state.file_name,
         "total": state.index.total_lines(),
+        "maxlen": state.index.max_line_length(),
         "view": view,
     })
     .to_string()

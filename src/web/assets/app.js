@@ -48,6 +48,7 @@
     view: boot.view || "",
     total: boot.total || 0,
     fileLines: boot.total || 0,
+    maxlen: boot.maxlen || 0,
     matches: [],
     matchIdx: -1,
     bmIdx: -1,
@@ -58,9 +59,18 @@
   const minimap = $("minimap");
   $("total-lines").textContent = state.fileLines.toLocaleString() + " lines";
 
-  (function setGutter() {
-    const digits = Math.max(3, String(state.fileLines).length);
-    document.documentElement.style.setProperty("--gutter-width", digits * 8 + 28 + "px");
+  const gutterW = Math.max(3, String(state.fileLines).length) * 8 + 28;
+  document.documentElement.style.setProperty("--gutter-width", gutterW + "px");
+
+  // Content width for horizontal scrolling of long lines: gutter + the longest line
+  // measured at the real font. Rows stretch to this width; the gutter stays sticky.
+  (function setContentWidth() {
+    const cvs = document.createElement("canvas");
+    const cx = cvs.getContext("2d");
+    cx.font = '13px "Courier New", Courier, monospace';
+    const charW = cx.measureText("0").width || 7.8;
+    const w = gutterW + Math.ceil(state.maxlen * charW) + 40;
+    document.documentElement.style.setProperty("--content-width", w + "px");
   })();
 
   // ---- view token helpers -----------------------------------------------
@@ -90,6 +100,9 @@
       const g = document.createElement("div");
       g.className = "gap-row";
       g.style.top = topPx + "px";
+      const inner = document.createElement("div");
+      inner.className = "gap-inner";
+      inner.style.width = scroller.clientWidth + "px";
       const below = document.createElement("button");
       below.className = "gap-btn";
       below.textContent = "↓5";
@@ -107,9 +120,10 @@
       above.addEventListener("click", () =>
         revealRange(Math.max(item.start, item.end - 4), item.end)
       );
-      g.appendChild(below);
-      g.appendChild(label);
-      g.appendChild(above);
+      inner.appendChild(below);
+      inner.appendChild(label);
+      inner.appendChild(above);
+      g.appendChild(inner);
       return g;
     }
     const bookmarked = bmSet.has(item.n);
