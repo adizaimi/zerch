@@ -1,3 +1,12 @@
+zerch (0.7.1) unstable; urgency=medium
+
+  * TUI: an active filter's term is now highlighted in place in the rendered line
+    (a light-blue box, the same treatment as an 'h' highlight and matching the web
+    UI), in both the list and JSON views. Precedence is search > highlight > filter;
+    disabled, negated, and bad-regex filters are not coloured.
+
+ -- Adi Zaimi <adizaimi@yahoo.com>  Sun, 14 Sep 2026 12:00:00 +0000
+
 zerch (0.7.0) unstable; urgency=medium
 
   * The --web browser UI reaches feature parity with the terminal viewer: log-level
