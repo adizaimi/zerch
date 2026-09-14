@@ -202,6 +202,7 @@ kbd {
 .prow .term { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prow .term.neg { color: #e74c3c; text-decoration: line-through; }
 .prow .swatch { width: 20px; height: 14px; border-radius: 2px; flex-shrink: 0; border: 1px solid rgba(0,0,0,0.15); }
+.prow .swatch.dim { opacity: 0.2; }
 .prow .tgl {
   border: 1px solid #ccc; background: #fff; color: #7f8c8d; border-radius: 3px;
   font-size: 11px; padding: 1px 4px; cursor: pointer; font-family: "Courier New", monospace;
@@ -344,7 +345,7 @@ kbd {
    is added client-side in a later commit. */
 .line-content .s { background: #fff9c4; }          /* search match */
 .line-content .s.s-cur { background: #fdd835; font-weight: bold; } /* current match */
-.line-content .f { background: #d6eaf8; }          /* filter match */
+/* .f (filter match) carries its palette colour inline, like .h highlights */
 .line-content .sel { background: #b2dfdb; }        /* selected-text (teal) */
 
 /* ---- gap rows ----------------------------------------------------------- */

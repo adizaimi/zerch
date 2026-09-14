@@ -66,6 +66,7 @@
     regexOn: false,
     counts: { filters: [], highlights: [] },
     showMinimap: true,
+    colorFilters: true,
     jsonSet: new Set(), // line numbers rendered as pretty JSON
     wrapSet: new Set(), // line numbers rendered wrapped
     heights: new Map(), // lineNumber -> px (decorated rows only)
@@ -393,6 +394,7 @@
     let url =
       "/rows?view=" + encodeURIComponent(state.view) + "&from=" + first + "&to=" + last;
     if (state.selectedText) url += "&sel=" + encodeURIComponent(state.selectedText);
+    if (!state.colorFilters) url += "&fcolor=0";
     if (inflight) inflight.abort();
     const ac = new AbortController();
     inflight = ac;
@@ -767,10 +769,16 @@
       en.addEventListener("change", () =>
         editLists((fs) => (fs[i].enabled = en.checked), true)
       );
+      // Filter colour swatch (shared palette: after the highlights). Dim when filter
+      // colouring is off or the filter is negated (a negation isn't boxed).
+      const sw = document.createElement("span");
+      sw.className = "swatch" + (!state.colorFilters || f.negate ? " dim" : "");
+      sw.style.background = PALETTE[(highlights.length + i) % PALETTE.length];
       const term = document.createElement("span");
       term.className = "term" + (f.negate ? " neg" : "");
       term.textContent = f.term;
       row.appendChild(en);
+      row.appendChild(sw);
       row.appendChild(term);
       row.appendChild(tglBtn("Aa", f.case, "case", () => editLists((fs) => (fs[i].case = !fs[i].case), true)));
       row.appendChild(tglBtn(".*", f.regex, "rx", () => editLists((fs) => (fs[i].regex = !fs[i].regex), true)));
@@ -1292,6 +1300,15 @@
   $("opt-histogram").addEventListener("change", function () {
     toggleHistogram(this.checked);
   });
+  $("opt-fcolor").addEventListener("change", function () {
+    state.colorFilters = this.checked;
+    try {
+      localStorage.setItem("zerch-fcolor", this.checked ? "1" : "0");
+    } catch (_e) {}
+    painted = { from: -1, to: -1 };
+    refresh(true);
+    renderPanel(); // update the panel swatches' dim state
+  });
 
   // ---- events ------------------------------------------------------------
   $("range-add-btn").addEventListener("click", addRangeFromInput);
@@ -1425,6 +1442,10 @@
         state.showMinimap = false;
         minimap.hidden = true;
         $("opt-minimap").checked = false;
+      }
+      if (localStorage.getItem("zerch-fcolor") === "0") {
+        state.colorFilters = false;
+        $("opt-fcolor").checked = false;
       }
     } catch (_e) {}
 

@@ -156,6 +156,8 @@ pub fn rows(state: &State, q: &HashMap<String, String>) -> (u16, String) {
     let to = to.max(from);
     // Transient client text selection (teal lane); never part of the view token.
     let sel = q.get("sel").map(String::as_str).filter(|s| !s.is_empty());
+    // Filter colouring display toggle (on unless the client passes fcolor=0).
+    let color_filters = q.get("fcolor").map(|s| s != "0").unwrap_or(true);
 
     let mut arr: Vec<serde_json::Value> = Vec::with_capacity(to - from);
     for i in from..to {
@@ -166,7 +168,7 @@ pub fn rows(state: &State, q: &HashMap<String, String>) -> (u16, String) {
                     "t": "l",
                     "n": nn,
                     "lvl": render::level_hex(state.index.level_of(nn)),
-                    "html": render::line_html(&view, &line, sel),
+                    "html": render::line_html(&view, &line, sel, color_filters),
                 }));
             }
             Some(DisplayedItem::Gap { start, end }) => {

@@ -8,6 +8,14 @@
 
 use crate::view::highlight::{match_ranges, syntax_ranges, SyntaxTok};
 use crate::view::state::ViewState;
+use crate::view::HIGHLIGHT_PALETTE;
+
+/// Filter j's colour from the shared palette: highlights take slots `0..H`, filters
+/// take `H..`, so filter and highlight colours never overlap (up to the palette size).
+/// `j` is the filter's index over the full list, matching the TUI.
+pub fn filter_color(view: &ViewState, j: usize) -> &'static str {
+    HIGHLIGHT_PALETTE[(view.highlights.len() + j) % HIGHLIGHT_PALETTE.len()]
+}
 
 /// Foreground colour for a syntax token — zercher's JSON palette (LineRow.css).
 fn syntax_hex(t: SyntaxTok) -> &'static str {
@@ -21,11 +29,12 @@ fn syntax_hex(t: SyntaxTok) -> &'static str {
 }
 
 // Background lane for a character, lowest to highest priority:
-// filter < selected-text < highlight < search.
+// filter < selected-text < highlight < search. Filter and highlight both carry an
+// inline colour (from the shared palette); the enum order encodes precedence.
 #[derive(Clone, PartialEq)]
 enum Bg {
     None,
-    Filter,
+    Filter(String),
     Selected,
     Highlight(String),
     Search,
@@ -51,7 +60,7 @@ pub fn escape_html(s: &str) -> String {
 /// background lane (class `s`/`f`/`sel` or inline highlight colour) and optional
 /// syntax foreground colour. `selected` is the transient client text selection
 /// (teal lane) — passed per-request, never part of the shareable view token.
-pub fn line_html(view: &ViewState, text: &str, selected: Option<&str>) -> String {
+pub fn line_html(view: &ViewState, text: &str, selected: Option<&str>, color_filters: bool) -> String {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     if n == 0 {
@@ -72,14 +81,18 @@ pub fn line_html(view: &ViewState, text: &str, selected: Option<&str>) -> String
     // Background lanes, applied lowest priority first so higher lanes overwrite.
     let mut bg: Vec<Bg> = vec![Bg::None; n];
 
-    // Filter-match tint (enabled, non-negated filters only).
-    for f in &view.filters {
-        if !f.enabled || f.negate || f.term.is_empty() {
-            continue;
-        }
-        for (s, e) in match_ranges(text, &f.term, f.case_sensitive, f.regex) {
-            for slot in bg.iter_mut().take(e.min(n)).skip(s.min(n)) {
-                *slot = Bg::Filter;
+    // Filter-match box in the filter's palette colour (enabled, non-negated filters
+    // only; skipped entirely when filter colouring is toggled off).
+    if color_filters {
+        for (j, f) in view.filters.iter().enumerate() {
+            if !f.enabled || f.negate || f.term.is_empty() {
+                continue;
+            }
+            let color = filter_color(view, j).to_string();
+            for (s, e) in match_ranges(text, &f.term, f.case_sensitive, f.regex) {
+                for slot in bg.iter_mut().take(e.min(n)).skip(s.min(n)) {
+                    *slot = Bg::Filter(color.clone());
+                }
             }
         }
     }
@@ -136,9 +149,14 @@ fn push_span(out: &mut String, seg: &str, fg: Option<&str>, bg: &Bg) {
     let mut style = String::new();
     match bg {
         Bg::None => {}
-        Bg::Filter => class = "f",
         Bg::Selected => class = "sel",
         Bg::Search => class = "s",
+        Bg::Filter(c) => {
+            class = "f";
+            style.push_str("background-color:");
+            style.push_str(c);
+            style.push(';');
+        }
         Bg::Highlight(c) => {
             class = "h";
             style.push_str("background-color:");
@@ -196,13 +214,13 @@ mod tests {
 
     #[test]
     fn plain_text_has_no_spans() {
-        assert_eq!(line_html(&v(), "hello world", None), "hello world");
+        assert_eq!(line_html(&v(), "hello world", None, true), "hello world");
     }
 
     #[test]
     fn escapes_untrusted_text() {
         assert_eq!(
-            line_html(&v(), "a <script>&\"'", None),
+            line_html(&v(), "a <script>&\"'", None, true),
             "a &lt;script&gt;&amp;&quot;&#39;"
         );
     }
@@ -210,7 +228,7 @@ mod tests {
     #[test]
     fn search_lane_wraps_matches() {
         let view = ViewState { search: "err".into(), ..v() };
-        assert_eq!(line_html(&view, "an err here", None), "an <span class=\"s\">err</span> here");
+        assert_eq!(line_html(&view, "an err here", None, true), "an <span class=\"s\">err</span> here");
     }
 
     #[test]
@@ -226,7 +244,7 @@ mod tests {
             ..v()
         };
         assert_eq!(
-            line_html(&view, "ok!", None),
+            line_html(&view, "ok!", None, true),
             "<span class=\"h\" style=\"background-color:#81c784;\">ok</span>!"
         );
     }
@@ -244,7 +262,7 @@ mod tests {
             }],
             ..v()
         };
-        assert_eq!(line_html(&view, "abc", None), "<span class=\"s\">abc</span>");
+        assert_eq!(line_html(&view, "abc", None, true), "<span class=\"s\">abc</span>");
     }
 
     #[test]
@@ -259,11 +277,11 @@ mod tests {
             }],
             ..v()
         };
-        assert_eq!(line_html(&view, "no", None), "no");
+        assert_eq!(line_html(&view, "no", None, true), "no");
     }
 
     #[test]
-    fn enabled_filter_tints_light_blue() {
+    fn enabled_filter_boxed_in_first_palette_colour() {
         let view = ViewState {
             filters: vec![FilterEntry {
                 term: "yes".into(),
@@ -274,18 +292,24 @@ mod tests {
             }],
             ..v()
         };
-        assert_eq!(line_html(&view, "yes!", None), "<span class=\"f\">yes</span>!");
+        // No highlights → filter j=0 takes palette slot 0.
+        assert_eq!(
+            line_html(&view, "yes!", None, true),
+            format!("<span class=\"f\" style=\"background-color:{};\">yes</span>!", HIGHLIGHT_PALETTE[0])
+        );
+        // Toggled off → no filter box.
+        assert_eq!(line_html(&view, "yes!", None, false), "yes!");
     }
 
     #[test]
     fn selected_text_teal_lane_over_filter_under_search() {
         // Selected wraps in .sel, case-insensitive and literal.
         assert_eq!(
-            line_html(&v(), "Foo foo", Some("foo")),
+            line_html(&v(), "Foo foo", Some("foo"), true),
             "<span class=\"sel\">Foo</span> <span class=\"sel\">foo</span>"
         );
         // Search still wins over a selection on the same text.
         let view = ViewState { search: "foo".into(), ..v() };
-        assert_eq!(line_html(&view, "foo", Some("foo")), "<span class=\"s\">foo</span>");
+        assert_eq!(line_html(&view, "foo", Some("foo"), true), "<span class=\"s\">foo</span>");
     }
 }
