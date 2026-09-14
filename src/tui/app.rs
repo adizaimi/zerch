@@ -26,9 +26,6 @@ const HINT: &str =
     "j/k f/b H/M/L · /search n/N :N goto · F filter h hl B mark x hide · T hist m menu · w wrap ? help q quit";
 const CURSOR_BG: Color = Color::Indexed(236);
 const EXPAND_CHUNK: usize = 5;
-// Light-blue box for filter-term matches in a rendered line (matches the web UI's
-// filter-match lane); highlights keep their own palette colours and win on overlap.
-const FILTER_MATCH_COLOR: &str = "#d6eaf8";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -183,6 +180,9 @@ pub struct App {
     highlights: Vec<HighlightEntry>,
     /// Menu-toggled per-line syntax colouring (logfmt / whole-line JSON).
     syntax_color: bool,
+    /// Menu-toggled colouring of filter-matched terms in the rendered line (on by
+    /// default). When off, filters still reduce the view but aren't boxed.
+    color_filters: bool,
     filters: Vec<FilterEntry>,
     filter_mode: FilterMode,
     bookmarks: BTreeSet<usize>,
@@ -253,6 +253,7 @@ impl App {
             hist_idx: -1,
             highlights: Vec::new(),
             syntax_color: false,
+            color_filters: true,
             filters: Vec::new(),
             filter_mode: FilterMode::And,
             bookmarks: BTreeSet::new(),
@@ -1239,6 +1240,7 @@ impl App {
             KeyCode::Char('e') => self.export_view(),
             KeyCode::Char('g') => self.export_shell(),
             KeyCode::Char('s') => self.syntax_color = !self.syntax_color,
+            KeyCode::Char('l') => self.color_filters = !self.color_filters,
             _ => {}
         }
     }
@@ -1453,7 +1455,7 @@ impl App {
     fn render_menu(&mut self, f: &mut Frame) {
         let area = f.area();
         let block = Block::bordered().title(
-            " Menu · space toggle · r rx · i case · x neg · d del · C/c/B/X clear filt/hl/bm/hidden · o AND/OR · f/h add · s syntax · e view · g grep · q close ",
+            " Menu · space toggle · r rx · i case · x neg · d del · C/c/B/X clear filt/hl/bm/hidden · o AND/OR · f/h add · s syntax · l filter-color · e view · g grep · q close ",
         );
         let inner = block.inner(area);
         let nf = self.filters.len();
@@ -1474,6 +1476,8 @@ impl App {
                 filt,
                 self.menu_sel == i,
                 self.filter_counts.get(i).copied().unwrap_or(Count::Pending),
+                &self.filter_color(i),
+                self.color_filters,
             ));
         }
 
@@ -1490,6 +1494,7 @@ impl App {
                 hl,
                 self.menu_sel == nf + j,
                 self.highlight_counts.get(j).copied().unwrap_or(Count::Pending),
+                &self.highlight_color(j),
             ));
         }
 
@@ -1532,6 +1537,13 @@ impl App {
             format!(
                 "Syntax color: {}  (s toggles)",
                 if self.syntax_color { "on" } else { "off" }
+            ),
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "Filter color: {}  (l toggles — boxes filter matches like highlights)",
+                if self.color_filters { "on" } else { "off" }
             ),
             Style::default().fg(Color::DarkGray),
         )));
@@ -1847,37 +1859,54 @@ impl App {
         self.total.to_string().len().max(2)
     }
 
+    // Highlights and filters share one colour pool (HIGHLIGHT_PALETTE), assigned by
+    // position so the two don't collide: highlight i takes slot i, filter j takes slot
+    // (num_highlights + j). Both are indexed over the full list, so enabling/disabling
+    // an item never shifts another's colour. (They can only repeat past the palette's
+    // length.) Colours are positional — the same scheme the web UI / `parse_view` use.
+    fn highlight_color(&self, i: usize) -> String {
+        HIGHLIGHT_PALETTE[i % HIGHLIGHT_PALETTE.len()].to_string()
+    }
+    fn filter_color(&self, j: usize) -> String {
+        HIGHLIGHT_PALETTE[(self.highlights.len() + j) % HIGHLIGHT_PALETTE.len()].to_string()
+    }
+
     // Specs used to colour a rendered line: the `h` highlights first, then the active
     // filter terms (so a real highlight wins over a filter on overlap, and search — a
-    // separate overlay — wins over both). Filter matches get a distinct light-blue box
-    // so a filtered-for term is highlighted in place, mirroring the web UI.
+    // separate overlay — wins over both). A filtered-for term is boxed in its palette
+    // colour, so filters are highlighted in place, mirroring the web UI.
     fn enabled_highlight_specs(&self) -> Vec<HighlightSpec> {
         let mut specs: Vec<HighlightSpec> = self
             .highlights
             .iter()
-            .filter(|h| h.enabled && !h.term.is_empty())
-            .map(|h| HighlightSpec {
+            .enumerate()
+            .filter(|(_, h)| h.enabled && !h.term.is_empty())
+            .map(|(i, h)| HighlightSpec {
                 term: h.term.clone(),
-                color: h.color.clone(),
+                color: self.highlight_color(i),
                 case_sensitive: h.case_sensitive,
                 regex: h.regex,
             })
             .collect();
         // Enabled, non-negated filters (a negation excludes rather than matches, so
         // there's nothing to colour). Bad regexes are skipped like in `recompute`.
-        specs.extend(
-            self.filters
-                .iter()
-                .filter(|f| {
-                    f.enabled && !f.term.is_empty() && !f.negate && !(f.regex && bad_regex(&f.term))
-                })
-                .map(|f| HighlightSpec {
-                    term: f.term.clone(),
-                    color: FILTER_MATCH_COLOR.to_string(),
-                    case_sensitive: f.case_sensitive,
-                    regex: f.regex,
-                }),
-        );
+        // Skipped entirely when filter colouring is toggled off.
+        if self.color_filters {
+            specs.extend(
+                self.filters
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| {
+                        f.enabled && !f.term.is_empty() && !f.negate && !(f.regex && bad_regex(&f.term))
+                    })
+                    .map(|(j, f)| HighlightSpec {
+                        term: f.term.clone(),
+                        color: self.filter_color(j),
+                        case_sensitive: f.case_sensitive,
+                        regex: f.regex,
+                    }),
+            );
+        }
         specs
     }
 
@@ -2313,7 +2342,9 @@ fn fmt_count(c: Count) -> String {
     }
 }
 
-fn filter_row(f: &FilterEntry, selected: bool, count: Count) -> Line<'static> {
+// `color` is the item's palette colour (from the shared pool); `show_color` is false
+// when filter colouring is toggled off, so the swatch is dimmed to show it's inactive.
+fn filter_row(f: &FilterEntry, selected: bool, count: Count, color: &str, show_color: bool) -> Line<'static> {
     let cur = if selected { "▸ " } else { "  " };
     let en = if f.enabled { "[on]" } else { "[· ]" };
     let rx = if f.regex { ".*" } else { "ab" };
@@ -2321,11 +2352,6 @@ fn filter_row(f: &FilterEntry, selected: bool, count: Count) -> Line<'static> {
     let ng = if f.negate { " ≠" } else { "" };
     let bad = f.regex && bad_regex(&f.term);
     let cnt = fmt_count(if bad { Count::Failed } else { count });
-    let text = format!(
-        "{cur}{en} {rx} {ca}{ng} {cnt}  {}{}",
-        f.term,
-        if bad { " (bad regex)" } else { "" }
-    );
     let mut st = if f.enabled {
         Style::default()
     } else {
@@ -2337,15 +2363,30 @@ fn filter_row(f: &FilterEntry, selected: bool, count: Count) -> Line<'static> {
     if selected {
         st = st.bg(CURSOR_BG);
     }
-    Line::from(Span::styled(text, st))
+    // No swatch for a negated filter (it excludes, so nothing is coloured) or when
+    // filter colouring is off.
+    let swatch_span = if show_color && !f.negate {
+        let (r, g, b) = hex_rgb(color);
+        Span::styled("██", Style::default().fg(Color::Rgb(r, g, b)))
+    } else {
+        Span::styled("··", Style::default().fg(Color::DarkGray))
+    };
+    Line::from(vec![
+        Span::styled(format!("{cur}{en} "), st),
+        swatch_span,
+        Span::styled(
+            format!(" {rx} {ca}{ng} {cnt}  {}{}", f.term, if bad { " (bad regex)" } else { "" }),
+            st,
+        ),
+    ])
 }
 
-fn highlight_row(h: &HighlightEntry, selected: bool, count: Count) -> Line<'static> {
+fn highlight_row(h: &HighlightEntry, selected: bool, count: Count, color: &str) -> Line<'static> {
     let cur = if selected { "▸ " } else { "  " };
     let en = if h.enabled { "[on]" } else { "[· ]" };
     let rx = if h.regex { ".*" } else { "ab" };
     let ca = if h.case_sensitive { "Aa" } else { "aa" };
-    let (r, g, b) = hex_rgb(&h.color);
+    let (r, g, b) = hex_rgb(color);
     let bad = h.regex && bad_regex(&h.term);
     let cnt = fmt_count(if bad { Count::Failed } else { count });
     let mut st = if h.enabled {
@@ -2458,12 +2499,19 @@ mod tests {
             negate: true,
         });
         let specs = app.enabled_highlight_specs();
-        // Highlights come first (own colour), then the active filter (filter colour).
+        // Highlights come first (palette slot 0), then the active filter takes the next
+        // shared-pool slot (after the one highlight) — no colour overlap.
         assert_eq!(specs.len(), 2);
         assert_eq!(specs[0].term, "here");
         assert_eq!(specs[0].color, HIGHLIGHT_PALETTE[0]);
         assert_eq!(specs[1].term, "error");
-        assert_eq!(specs[1].color, FILTER_MATCH_COLOR);
+        assert_eq!(specs[1].color, HIGHLIGHT_PALETTE[1]); // 1 highlight + filter index 0
+
+        // The toggle removes filter colouring but keeps highlights.
+        app.color_filters = false;
+        let specs = app.enabled_highlight_specs();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].term, "here");
     }
 
     #[test]
