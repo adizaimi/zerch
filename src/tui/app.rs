@@ -26,6 +26,9 @@ const HINT: &str =
     "j/k f/b H/M/L · /search n/N :N goto · F filter h hl B mark x hide · T hist m menu · w wrap ? help q quit";
 const CURSOR_BG: Color = Color::Indexed(236);
 const EXPAND_CHUNK: usize = 5;
+// Light-blue box for filter-term matches in a rendered line (matches the web UI's
+// filter-match lane); highlights keep their own palette colours and win on overlap.
+const FILTER_MATCH_COLOR: &str = "#d6eaf8";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -1844,8 +1847,13 @@ impl App {
         self.total.to_string().len().max(2)
     }
 
+    // Specs used to colour a rendered line: the `h` highlights first, then the active
+    // filter terms (so a real highlight wins over a filter on overlap, and search — a
+    // separate overlay — wins over both). Filter matches get a distinct light-blue box
+    // so a filtered-for term is highlighted in place, mirroring the web UI.
     fn enabled_highlight_specs(&self) -> Vec<HighlightSpec> {
-        self.highlights
+        let mut specs: Vec<HighlightSpec> = self
+            .highlights
             .iter()
             .filter(|h| h.enabled && !h.term.is_empty())
             .map(|h| HighlightSpec {
@@ -1854,7 +1862,23 @@ impl App {
                 case_sensitive: h.case_sensitive,
                 regex: h.regex,
             })
-            .collect()
+            .collect();
+        // Enabled, non-negated filters (a negation excludes rather than matches, so
+        // there's nothing to colour). Bad regexes are skipped like in `recompute`.
+        specs.extend(
+            self.filters
+                .iter()
+                .filter(|f| {
+                    f.enabled && !f.term.is_empty() && !f.negate && !(f.regex && bad_regex(&f.term))
+                })
+                .map(|f| HighlightSpec {
+                    term: f.term.clone(),
+                    color: FILTER_MATCH_COLOR.to_string(),
+                    case_sensitive: f.case_sensitive,
+                    regex: f.regex,
+                }),
+        );
+        specs
     }
 
     // Per-character styled content for one line: syntax base (opt-in) with
@@ -2399,6 +2423,47 @@ mod tests {
     fn app_n(n: usize) -> App {
         let lines: Vec<String> = (1..=n).map(|i| format!("line {i}")).collect();
         app_from(&lines.iter().map(String::as_str).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn filter_terms_are_highlighted_like_h() {
+        let mut app = app_from(&["error here", "ok"]);
+        app.highlights.push(HighlightEntry {
+            term: "here".into(),
+            color: HIGHLIGHT_PALETTE[0].to_string(),
+            enabled: true,
+            case_sensitive: false,
+            regex: false,
+        });
+        app.filters.push(FilterEntry {
+            term: "error".into(),
+            enabled: true,
+            case_sensitive: false,
+            regex: false,
+            negate: false,
+        });
+        // A disabled and a negated filter must NOT be coloured.
+        app.filters.push(FilterEntry {
+            term: "off".into(),
+            enabled: false,
+            case_sensitive: false,
+            regex: false,
+            negate: false,
+        });
+        app.filters.push(FilterEntry {
+            term: "not".into(),
+            enabled: true,
+            case_sensitive: false,
+            regex: false,
+            negate: true,
+        });
+        let specs = app.enabled_highlight_specs();
+        // Highlights come first (own colour), then the active filter (filter colour).
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].term, "here");
+        assert_eq!(specs[0].color, HIGHLIGHT_PALETTE[0]);
+        assert_eq!(specs[1].term, "error");
+        assert_eq!(specs[1].color, FILTER_MATCH_COLOR);
     }
 
     #[test]
