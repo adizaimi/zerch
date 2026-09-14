@@ -1,4 +1,4 @@
-.TH ZERCH 1 "2026-09-14" "zerch 0.7.1" "User Commands"
+.TH ZERCH 1 "2026-09-14" "zerch 0.7.2" "User Commands"
 .SH NAME
 zerch \- a less-but-smarter terminal log viewer
 .SH SYNOPSIS
@@ -120,6 +120,12 @@ lists accept inclusive ranges, so
 .I 1,3\-5,8
 is the same as
 .IR 1,3,4,5,8 .
+Filter and highlight terms share one colour palette (each shown as a swatch in
+the menu) and their matches are boxed in that colour in the view;
+.B l
+toggles filter colouring,
+.B s
+toggles syntax colouring.
 .TP
 .B q ^C
 Quit (press

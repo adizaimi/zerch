@@ -1,3 +1,13 @@
+zerch (0.7.2) unstable; urgency=medium
+
+  * TUI: filter terms are now coloured from the same palette as highlights, assigned
+    by position so filter and highlight colours never overlap (up to the palette
+    size). Each filter's term is boxed in its own colour in the rendered line, the
+    m menu shows a colour swatch per filter, and a new "l" toggle turns filter
+    colouring on and off (on by default).
+
+ -- Adi Zaimi <adizaimi@yahoo.com>  Sun, 14 Sep 2026 18:00:00 +0000
+
 zerch (0.7.1) unstable; urgency=medium
 
   * TUI: an active filter's term is now highlighted in place in the rendered line
