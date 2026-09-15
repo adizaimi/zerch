@@ -1,4 +1,4 @@
-.TH ZERCH 1 "2026-09-14" "zerch 0.7.2" "User Commands"
+.TH ZERCH 1 "2026-09-14" "zerch 0.7.3" "User Commands"
 .SH NAME
 zerch \- a less-but-smarter terminal log viewer
 .SH SYNOPSIS
@@ -125,7 +125,10 @@ the menu) and their matches are boxed in that colour in the view;
 .B l
 toggles filter colouring,
 .B s
-toggles syntax colouring.
+toggles syntax colouring, and
+.B z
+toggles zebra striping (a faint tint on alternate lines). These display
+toggles are remembered per file across sessions.
 .TP
 .B q ^C
 Quit (press

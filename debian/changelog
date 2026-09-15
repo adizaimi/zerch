@@ -1,3 +1,16 @@
+zerch (0.7.3) unstable; urgency=medium
+
+  * TUI: new zebra-striping display toggle (menu "z") — a faint tint on alternate
+    logical lines, mirroring the web UI. The tint runs to the right edge of the
+    row. Off by default.
+  * TUI: the syntax-colour, filter-colour, and zebra display toggles are now
+    remembered per file across sessions (saved in the view token).
+  * TUI: toggling a bookmark, hiding a line, or revealing a gap no longer re-runs
+    the whole-file filter search — the cached filter result is reused — removing a
+    noticeable pause on multi-million-line files.
+
+ -- Adi Zaimi <adizaimi@yahoo.com>  Mon, 14 Sep 2026 20:00:00 +0000
+
 zerch (0.7.2) unstable; urgency=medium
 
   * TUI: filter terms are now coloured from the same palette as highlights, assigned
