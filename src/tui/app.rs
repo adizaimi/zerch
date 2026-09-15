@@ -145,6 +145,12 @@ pub struct App {
     file_name: String,
     total: usize,
     displayed: Option<Vec<DisplayedItem>>,
+    // The raw filter/time result behind `displayed` (before bookmarks/reveal/hidden
+    // are overlaid), cached from the last `recompute`. Toggling a bookmark or
+    // hiding a line doesn't change this set, so the overlay-only refresh reuses it
+    // instead of re-running the (expensive, whole-file) search. Empty when there is
+    // no active filter.
+    filter_match_cache: Vec<usize>,
     // line number → position in `displayed`, rebuilt whenever `displayed` changes,
     // so pos_of_line / in_view are O(1) rather than a linear scan.
     line_to_pos: HashMap<usize, usize>,
@@ -235,6 +241,7 @@ impl App {
             file_name,
             total,
             displayed: None,
+            filter_match_cache: Vec::new(),
             line_to_pos: HashMap::new(),
             miv: Vec::new(),
             pos: 0,
@@ -736,10 +743,11 @@ impl App {
         let unfiltered = enabled.is_empty() && self.time_range.is_none();
         if unfiltered && self.hidden_lines.is_empty() {
             self.displayed = None;
+            self.filter_match_cache.clear();
         } else {
             // Without a filter but with hidden lines, the base set is every line
             // (build_displayed_items subtracts `hidden`, leaving gaps where they were).
-            let matches: Vec<usize> = if unfiltered {
+            self.filter_match_cache = if unfiltered {
                 (1..=self.total).collect()
             } else {
                 let scope = Scope {
@@ -750,10 +758,48 @@ impl App {
                     .map(|r| r.matching_lines)
                     .unwrap_or_default()
             };
-            let bm: Vec<usize> = self.bookmarks.iter().copied().collect();
-            let vis: Vec<usize> = self.visible_lines.iter().copied().collect();
-            let hid: Vec<usize> = self.hidden_lines.iter().copied().collect();
-            self.displayed = Some(build_displayed_items(&matches, &bm, &[], &vis, &hid, self.total));
+            self.build_displayed_from_cache();
+        }
+        self.rebuild_line_index();
+        self.refresh_matches_in_view();
+    }
+
+    /// True when a filter or time range is narrowing the view (so `displayed` is a
+    /// real subset). Bookmarks / revealed / hidden lines do not count.
+    fn has_active_filter(&self) -> bool {
+        self.time_range.is_some()
+            || self
+                .filters
+                .iter()
+                .any(|f| f.enabled && !f.term.is_empty() && !(f.regex && bad_regex(&f.term)))
+    }
+
+    /// Overlay the current bookmarks / revealed / hidden lines onto the cached
+    /// filter matches to produce `self.displayed`. Assumes `filter_match_cache` is
+    /// current (populated by `recompute`, or a full-file range when unfiltered).
+    fn build_displayed_from_cache(&mut self) {
+        let bm: Vec<usize> = self.bookmarks.iter().copied().collect();
+        let vis: Vec<usize> = self.visible_lines.iter().copied().collect();
+        let hid: Vec<usize> = self.hidden_lines.iter().copied().collect();
+        self.displayed =
+            Some(build_displayed_items(&self.filter_match_cache, &bm, &[], &vis, &hid, self.total));
+    }
+
+    /// Rebuild `displayed` when only the overlay changed (a bookmark toggled, a gap
+    /// revealed, a line hidden). The filter result is unaffected, so this reuses the
+    /// cached match set instead of re-running the whole-file search — the difference
+    /// between instant and a visible pause on a multi-million-line file.
+    fn rebuild_overlay(&mut self) {
+        if !self.has_active_filter() && self.hidden_lines.is_empty() {
+            self.displayed = None;
+            self.filter_match_cache.clear();
+        } else {
+            // No filter but lines are hidden: the base set is every line. (When a
+            // filter is active the cache already holds its matches.)
+            if !self.has_active_filter() && self.filter_match_cache.is_empty() {
+                self.filter_match_cache = (1..=self.total).collect();
+            }
+            self.build_displayed_from_cache();
         }
         self.rebuild_line_index();
         self.refresh_matches_in_view();
@@ -763,6 +809,18 @@ impl App {
     fn refresh_preserving(&mut self) {
         let ln = self.current_line();
         self.recompute();
+        self.restore_cursor_line(ln);
+    }
+
+    // Overlay-only refresh (bookmarks / reveal / hidden), preserving the cursor
+    // line. Skips the search — see `rebuild_overlay`.
+    fn refresh_overlay_preserving(&mut self) {
+        let ln = self.current_line();
+        self.rebuild_overlay();
+        self.restore_cursor_line(ln);
+    }
+
+    fn restore_cursor_line(&mut self, ln: Option<usize>) {
         match ln.and_then(|l| self.pos_of_line(l)) {
             Some(p) => self.jump_to(p as i64),
             None => {
@@ -809,7 +867,7 @@ impl App {
             }
             // Bookmarks are forced-visible only within a filtered view.
             if self.displayed.is_some() {
-                self.refresh_preserving();
+                self.refresh_overlay_preserving();
             }
         }
     }
@@ -819,7 +877,7 @@ impl App {
     fn hide_current_line(&mut self) {
         if let Some(n) = self.current_line() {
             self.hidden_lines.insert(n);
-            self.refresh_preserving();
+            self.refresh_overlay_preserving();
         }
     }
 
@@ -852,7 +910,7 @@ impl App {
                 self.visible_lines.insert(i);
                 self.hidden_lines.remove(&i); // revealing a gap also un-hides
             }
-            self.recompute();
+            self.rebuild_overlay();
             let focus = if from_top { lo } else { hi };
             match self.pos_of_line(focus) {
                 Some(p) => self.jump_to(p as i64),
@@ -1227,13 +1285,13 @@ impl App {
             KeyCode::Char('B') => {
                 self.bookmarks.clear();
                 if self.displayed.is_some() {
-                    self.refresh_preserving();
+                    self.refresh_overlay_preserving();
                 }
             }
             KeyCode::Char('X') => {
                 if !self.hidden_lines.is_empty() {
                     self.hidden_lines.clear();
-                    self.refresh_preserving();
+                    self.refresh_overlay_preserving();
                 }
             }
             KeyCode::Char('f') => {
@@ -1272,7 +1330,7 @@ impl App {
                         self.bookmarks =
                             parse_cols(&val).into_iter().filter(|&n| n <= self.total).collect();
                         if self.displayed.is_some() {
-                            self.refresh_preserving();
+                            self.refresh_overlay_preserving();
                         }
                     }
                     None => {}
@@ -2547,6 +2605,32 @@ mod tests {
         let specs = app.enabled_highlight_specs();
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].term, "here");
+    }
+
+    #[test]
+    fn overlay_refresh_matches_full_recompute() {
+        // With a filter active, toggling a bookmark takes the light overlay path
+        // (no re-search). It must produce exactly what a full recompute would.
+        let mut app = app_from(&["alpha", "beta", "alpha", "gamma", "alpha"]);
+        app.add_filter("alpha"); // displayed = lines 1, 3, 5 with gaps between
+        assert!(app.displayed.is_some());
+
+        // Bookmark a non-matching line, then refresh via the overlay-only path.
+        app.bookmarks.insert(2);
+        app.refresh_overlay_preserving();
+        let via_overlay = app.displayed.clone();
+
+        // A full recompute (re-running the search) must yield the identical sequence.
+        app.recompute();
+        assert_eq!(via_overlay, app.displayed);
+
+        // The bookmarked, non-matching line is now forced visible.
+        assert!(app
+            .displayed
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|d| *d == DisplayedItem::Line(2)));
     }
 
     #[test]
