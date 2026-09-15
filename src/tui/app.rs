@@ -187,7 +187,10 @@ pub struct App {
     match_idx: usize,
     // Shared recent-input history across search / filter / highlight (newest first).
     history: Vec<String>,
-    hist_idx: i64, // -1 = not browsing
+    // Separate recent-command history for the `:` prompt (newest first), so goto
+    // targets like `:234` are recallable without polluting the term history.
+    cmd_history: Vec<String>,
+    hist_idx: i64, // -1 = not browsing (shared: only one prompt is active at a time)
 
     highlights: Vec<HighlightEntry>,
     /// Menu-toggled per-line syntax colouring (logfmt / whole-line JSON).
@@ -267,6 +270,7 @@ impl App {
             matches: Vec::new(),
             match_idx: 0,
             history: Vec::new(),
+            cmd_history: Vec::new(),
             hist_idx: -1,
             highlights: Vec::new(),
             syntax_color: false,
@@ -533,6 +537,7 @@ impl App {
         if c.is_empty() {
             return;
         }
+        push_history(&mut self.cmd_history, c); // recallable with ↑/↓ next time
         if c == "q" || c == "quit" {
             self.should_quit = true; // vim :q — quit straight away (read-only viewer)
         } else if c == "help" || c == "h" {
@@ -1787,9 +1792,10 @@ impl App {
             KeyCode::Right => self.input_cursor = (self.input_cursor + 1).min(len),
             KeyCode::Home => self.input_cursor = 0,
             KeyCode::End => self.input_cursor = len,
-            // History recall is for the term prompts; the `:` command line has none.
-            KeyCode::Up if self.mode != Mode::Command => self.history_recall(1),
-            KeyCode::Down if self.mode != Mode::Command => self.history_recall(-1),
+            // ↑/↓ recall recent input — term history for the search/filter/highlight
+            // prompts, the separate command history for the `:` line.
+            KeyCode::Up => self.history_recall(1),
+            KeyCode::Down => self.history_recall(-1),
             KeyCode::Char(c) => {
                 let b = self.input_byte(self.input_cursor);
                 self.input.insert(b, c);
@@ -1818,21 +1824,27 @@ impl App {
     }
 
     fn history_recall(&mut self, dir: i64) {
-        let len = self.history.len() as i64;
+        // The `:` prompt recalls its own command history; every other input prompt
+        // recalls the shared term history.
+        let cmd = self.mode == Mode::Command;
+        let len = if cmd { self.cmd_history.len() } else { self.history.len() } as i64;
         if len == 0 {
             return;
         }
+        let at = |app: &Self, i: usize| -> String {
+            if cmd { app.cmd_history[i].clone() } else { app.history[i].clone() }
+        };
         if dir > 0 {
             let ni = (self.hist_idx + 1).min(len - 1);
             self.hist_idx = ni;
-            self.input = self.history[ni as usize].clone();
+            self.input = at(self, ni as usize);
         } else if self.hist_idx <= 0 {
             self.hist_idx = -1;
             self.input.clear();
         } else {
             let ni = self.hist_idx - 1;
             self.hist_idx = ni;
-            self.input = self.history[ni as usize].clone();
+            self.input = at(self, ni as usize);
         }
         self.input_cursor = self.input.chars().count(); // caret to end of recalled term
     }
@@ -2357,7 +2369,7 @@ impl App {
             }
             Mode::Command => {
                 let mut spans = self.input_spans(":");
-                spans.push(Span::styled("  line number · $ = last · help · q = quit · Enter", dim));
+                spans.push(Span::styled("  line number · $ = last · help · q = quit · ↑↓ recent · Enter", dim));
                 Line::from(spans)
             }
             Mode::Hist => Line::from(Span::styled(
@@ -3010,6 +3022,29 @@ mod tests {
         // `N` reverses the (backward) direction → moves forward to line 8.
         app.goto_match_relative(app.search_reverse);
         assert_eq!(app.current_line(), Some(8));
+    }
+
+    #[test]
+    fn command_history_is_separate_and_recallable() {
+        let mut app = app_n(300);
+        app.run_search("term"); // goes to the shared term history
+        app.run_command("234"); // goto — goes to the command history
+        app.run_command("10");
+
+        // The `:` prompt recalls commands, newest first.
+        app.mode = Mode::Command;
+        app.reset_input();
+        app.history_recall(1);
+        assert_eq!(app.input, "10");
+        app.history_recall(1);
+        assert_eq!(app.input, "234");
+        assert!(!app.cmd_history.contains(&"term".to_string())); // not polluted
+
+        // The term prompts still recall terms, not commands.
+        app.mode = Mode::Search;
+        app.reset_input();
+        app.history_recall(1);
+        assert_eq!(app.input, "term");
     }
 
     #[test]
