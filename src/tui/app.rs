@@ -895,7 +895,36 @@ impl App {
     fn hide_current_line(&mut self) {
         if let Some(n) = self.current_line() {
             self.hidden_lines.insert(n);
-            self.refresh_overlay_preserving();
+            self.rebuild_overlay();
+            // Land on the next exposed line (or the previous one at end-of-file),
+            // never on the gap the hidden line collapsed into — so pressing `x`
+            // repeatedly hides consecutive lines.
+            self.focus_after_hide(n);
+        }
+    }
+
+    // Move the cursor to the nearest still-visible line after hiding line `n`:
+    // the next line below it, else the last line above it, else clamp.
+    fn focus_after_hide(&mut self, n: usize) {
+        let target = self.displayed.as_ref().and_then(|d| {
+            d.iter()
+                .find_map(|it| match it {
+                    DisplayedItem::Line(m) if *m > n => Some(*m),
+                    _ => None,
+                })
+                .or_else(|| {
+                    d.iter().rev().find_map(|it| match it {
+                        DisplayedItem::Line(m) if *m < n => Some(*m),
+                        _ => None,
+                    })
+                })
+        });
+        match target.and_then(|t| self.pos_of_line(t)) {
+            Some(p) => self.jump_to(p as i64),
+            None => {
+                self.cursor = self.cursor.min(self.count().saturating_sub(1));
+                self.pos = self.clamp_pos(self.pos as i64);
+            }
         }
     }
 
@@ -2817,18 +2846,40 @@ mod tests {
         app.hide_current_line();
         assert!(app.hidden_lines.contains(&5));
         assert!(app.pos_of_line(5).is_none()); // collapsed into a gap
-        let has_gap = app
+        let gap_pos = app
             .displayed
             .as_ref()
             .unwrap()
             .iter()
-            .any(|it| matches!(it, DisplayedItem::Gap { start, end } if *start <= 5 && *end >= 5));
-        assert!(has_gap);
-        // Revealing the gap un-hides the line and returns to the full view.
+            .position(|it| matches!(it, DisplayedItem::Gap { start, end } if *start <= 5 && *end >= 5))
+            .expect("hidden line collapses into a gap");
+        // The cursor moved off the collapsed line onto the next exposed one.
+        assert_eq!(app.current_line(), Some(6));
+        // Move onto the gap and reveal it — the line comes back, full view restored.
+        app.cursor = gap_pos;
         app.gap_action(true);
         assert!(app.hidden_lines.is_empty());
         assert!(app.pos_of_line(5).is_some());
         assert!(app.displayed.is_none());
+    }
+
+    #[test]
+    fn repeated_hide_hides_consecutive_lines() {
+        let mut app = app_n(10);
+        app.jump_to(4); // cursor on line 5
+        app.hide_current_line(); // hide 5 → cursor lands on line 6
+        assert_eq!(app.current_line(), Some(6));
+        app.hide_current_line(); // hide 6 → line 7
+        app.hide_current_line(); // hide 7 → line 8
+        assert_eq!(app.hidden_lines.iter().copied().collect::<Vec<_>>(), vec![5, 6, 7]);
+        assert_eq!(app.current_line(), Some(8));
+
+        // At end-of-file the cursor falls back to the previous exposed line.
+        app.jump_to(app.count() as i64 - 1); // last line (10)
+        assert_eq!(app.current_line(), Some(10));
+        app.hide_current_line();
+        assert!(app.hidden_lines.contains(&10));
+        assert_eq!(app.current_line(), Some(9));
     }
 
     #[test]
