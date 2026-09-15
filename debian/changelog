@@ -1,3 +1,20 @@
+zerch (0.7.4) unstable; urgency=medium
+
+  * TUI: search now starts from the cursor instead of the top of the file. "/"
+    jumps to the first match at or after the cursor (wrapping if none ahead), and
+    a new "?" searches backward; "n" repeats in the search direction and "N"
+    reverses it.
+  * TUI: "?" no longer opens the help overlay — ":help" (or ":h") does. The help
+    overlay was rewritten to cover every key, including the menu and the time
+    histogram, which it had omitted.
+  * TUI: pressing "x" to hide a line now always moves the cursor to the next
+    exposed line (never onto the collapsed gap), so repeated "x" hides consecutive
+    lines starting with the first.
+  * TUI: the ":" command line now keeps its own recallable history (up/down),
+    separate from the search/filter/highlight term history.
+
+ -- Adi Zaimi <adizaimi@yahoo.com>  Mon, 14 Sep 2026 21:00:00 +0000
+
 zerch (0.7.3) unstable; urgency=medium
 
   * TUI: new zebra-striping display toggle (menu "z") — a faint tint on alternate

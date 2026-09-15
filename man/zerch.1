@@ -1,4 +1,4 @@
-.TH ZERCH 1 "2026-09-14" "zerch 0.7.3" "User Commands"
+.TH ZERCH 1 "2026-09-14" "zerch 0.7.4" "User Commands"
 .SH NAME
 zerch \- a less-but-smarter terminal log viewer
 .SH SYNOPSIS
@@ -60,8 +60,14 @@ Go to line
 .IR N ;
 .B :$
 goes to the last line;
+.B :help
+opens the cheat\-sheet;
 .B :q
-quits.
+quits. The
+.B :
+prompt keeps its own history \(em press
+.B \(ua \(da
+to recall recent commands.
 .TP
 .B \(<- \(-> 0 w
 Pan long lines (half a screen), reset pan, toggle in\-place wrap. A numeric
@@ -69,10 +75,10 @@ prefix pans by that many columns, e.g.
 .B 1 \(->
 shifts one column right.
 .TP
-.B /
-Search;
+.B / ?
+Search forward / backward, starting from the cursor and wrapping;
 .B n N
-next/previous match from the cursor;
+repeat in the search direction / reverse it;
 .B ^R
 regex,
 .B ^A
