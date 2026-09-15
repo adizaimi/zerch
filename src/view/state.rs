@@ -56,6 +56,7 @@ pub struct ViewState {
     pub col_sep: String,     // column separator (empty = default comma)
     pub syntax: bool,        // whole-line syntax colouring toggle
     pub zebra: bool,         // TUI-only zebra striping toggle (web ignores it)
+    pub no_filter_color: bool, // true = suppress filter-match colouring (fcolor=0); coloured by default
     pub levels: Vec<u8>,     // restrict to these canonical level codes (empty = all)
     pub time_range: Option<(i64, i64)>, // inclusive epoch-ms [from, to] (histogram brush)
     pub search: String,
@@ -181,6 +182,10 @@ pub fn serialize_view(v: &ViewState) -> String {
         p.append_pair("zebra", "1");
     }
 
+    if v.no_filter_color {
+        p.append_pair("fcolor", "0");
+    }
+
     if !v.levels.is_empty() {
         let mut lv = v.levels.clone();
         lv.sort_unstable();
@@ -260,6 +265,7 @@ pub fn parse_view(query: &str) -> ViewState {
         col_sep: get("colsep"),
         syntax: get("syntax") == "1",
         zebra: get("zebra") == "1",
+        no_filter_color: get("fcolor") == "0",
         levels: list("levels")
             .iter()
             .filter_map(|s| s.parse::<u8>().ok())
@@ -400,6 +406,16 @@ mod tests {
         let s = serialize_view(&v);
         assert!(s.contains("zebra=1"));
         assert!(parse_view(&s).zebra);
+    }
+
+    #[test]
+    fn filter_color_off_round_trips() {
+        // Coloured by default → nothing emitted, stays coloured.
+        assert!(!parse_view(&serialize_view(&base())).no_filter_color);
+        let v = ViewState { no_filter_color: true, ..base() };
+        let s = serialize_view(&v);
+        assert!(s.contains("fcolor=0"));
+        assert!(parse_view(&s).no_filter_color);
     }
 
     #[test]

@@ -303,6 +303,7 @@ impl App {
         self.col_sep_text = if v.col_sep.is_empty() { ",".to_string() } else { v.col_sep };
         self.syntax_color = v.syntax;
         self.zebra = v.zebra;
+        self.color_filters = !v.no_filter_color;
         self.search_regex = v.search_regex;
         self.search_case = v.search_case;
         if !v.search.is_empty() {
@@ -1326,6 +1327,7 @@ impl App {
             col_sep: if self.col_sep_text == "," { String::new() } else { self.col_sep_text.clone() },
             syntax: self.syntax_color,
             zebra: self.zebra,
+            no_filter_color: !self.color_filters,
             // The TUI has no level-chip UI; the web sets this. Kept default so the
             // token format stays single-sourced in view::state.
             levels: Vec::new(),
