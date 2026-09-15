@@ -55,6 +55,7 @@ pub struct ViewState {
     pub hide_cols: String,   // 1-based column list to blank out, e.g. "1,2,5"
     pub col_sep: String,     // column separator (empty = default comma)
     pub syntax: bool,        // whole-line syntax colouring toggle
+    pub zebra: bool,         // TUI-only zebra striping toggle (web ignores it)
     pub levels: Vec<u8>,     // restrict to these canonical level codes (empty = all)
     pub time_range: Option<(i64, i64)>, // inclusive epoch-ms [from, to] (histogram brush)
     pub search: String,
@@ -176,6 +177,10 @@ pub fn serialize_view(v: &ViewState) -> String {
         p.append_pair("syntax", "1");
     }
 
+    if v.zebra {
+        p.append_pair("zebra", "1");
+    }
+
     if !v.levels.is_empty() {
         let mut lv = v.levels.clone();
         lv.sort_unstable();
@@ -254,6 +259,7 @@ pub fn parse_view(query: &str) -> ViewState {
         hide_cols: get("hidecols"),
         col_sep: get("colsep"),
         syntax: get("syntax") == "1",
+        zebra: get("zebra") == "1",
         levels: list("levels")
             .iter()
             .filter_map(|s| s.parse::<u8>().ok())
@@ -385,6 +391,15 @@ mod tests {
         let s = serialize_view(&v);
         assert!(s.contains("syntax=1"));
         assert!(parse_view(&s).syntax);
+    }
+
+    #[test]
+    fn zebra_flag_round_trips() {
+        assert!(!parse_view(&serialize_view(&base())).zebra); // off by default, not emitted
+        let v = ViewState { zebra: true, ..base() };
+        let s = serialize_view(&v);
+        assert!(s.contains("zebra=1"));
+        assert!(parse_view(&s).zebra);
     }
 
     #[test]

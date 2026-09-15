@@ -302,6 +302,7 @@ impl App {
         self.hide_cols_text = v.hide_cols;
         self.col_sep_text = if v.col_sep.is_empty() { ",".to_string() } else { v.col_sep };
         self.syntax_color = v.syntax;
+        self.zebra = v.zebra;
         self.search_regex = v.search_regex;
         self.search_case = v.search_case;
         if !v.search.is_empty() {
@@ -1324,6 +1325,7 @@ impl App {
             // Emit the separator only when it differs from the default comma.
             col_sep: if self.col_sep_text == "," { String::new() } else { self.col_sep_text.clone() },
             syntax: self.syntax_color,
+            zebra: self.zebra,
             // The TUI has no level-chip UI; the web sets this. Kept default so the
             // token format stays single-sourced in view::state.
             levels: Vec::new(),
