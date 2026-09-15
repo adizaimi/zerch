@@ -25,6 +25,9 @@ use ratatui::Frame;
 const HINT: &str =
     "j/k f/b H/M/L · /search n/N :N goto · F filter h hl B mark x hide · T hist m menu · w wrap ? help q quit";
 const CURSOR_BG: Color = Color::Indexed(236);
+// Faint zebra stripe on alternate logical lines; darker than CURSOR_BG so the
+// cursor line still stands out over a striped row. Tuned for dark terminals.
+const ZEBRA_BG: Color = Color::Indexed(234);
 const EXPAND_CHUNK: usize = 5;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -183,6 +186,9 @@ pub struct App {
     /// Menu-toggled colouring of filter-matched terms in the rendered line (on by
     /// default). When off, filters still reduce the view but aren't boxed.
     color_filters: bool,
+    /// Menu-toggled zebra striping: a faint background on alternate logical lines
+    /// (like the web UI). Local display pref — not part of the shareable view token.
+    zebra: bool,
     filters: Vec<FilterEntry>,
     filter_mode: FilterMode,
     bookmarks: BTreeSet<usize>,
@@ -254,6 +260,7 @@ impl App {
             highlights: Vec::new(),
             syntax_color: false,
             color_filters: true,
+            zebra: false,
             filters: Vec::new(),
             filter_mode: FilterMode::And,
             bookmarks: BTreeSet::new(),
@@ -1241,6 +1248,7 @@ impl App {
             KeyCode::Char('g') => self.export_shell(),
             KeyCode::Char('s') => self.syntax_color = !self.syntax_color,
             KeyCode::Char('l') => self.color_filters = !self.color_filters,
+            KeyCode::Char('z') => self.zebra = !self.zebra,
             _ => {}
         }
     }
@@ -1455,7 +1463,7 @@ impl App {
     fn render_menu(&mut self, f: &mut Frame) {
         let area = f.area();
         let block = Block::bordered().title(
-            " Menu · space toggle · r rx · i case · x neg · d del · C/c/B/X clear filt/hl/bm/hidden · o AND/OR · f/h add · s syntax · l filter-color · e view · g grep · q close ",
+            " Menu · space toggle · r rx · i case · x neg · d del · C/c/B/X clear filt/hl/bm/hidden · o AND/OR · f/h add · s syntax · l filter-color · z zebra · e view · g grep · q close ",
         );
         let inner = block.inner(area);
         let nf = self.filters.len();
@@ -1544,6 +1552,13 @@ impl App {
             format!(
                 "Filter color: {}  (l toggles — boxes filter matches like highlights)",
                 if self.color_filters { "on" } else { "off" }
+            ),
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "Zebra stripes: {}  (z toggles — faint tint on alternate lines)",
+                if self.zebra { "on" } else { "off" }
             ),
             Style::default().fg(Color::DarkGray),
         )));
@@ -2018,9 +2033,10 @@ impl App {
         let mut p = self.pos;
         while rows.len() < self.height && p < count {
             let is_cursor = p == self.cursor;
+            let stripe = self.zebra && p % 2 == 1;
             match self.item_at(p) {
                 DisplayedItem::Line(n) => {
-                    self.push_line_rows(&mut rows, n, is_cursor, gutter, content_w);
+                    self.push_line_rows(&mut rows, n, is_cursor, stripe, gutter, content_w);
                 }
                 DisplayedItem::Gap { start, end } => {
                     rows.push(self.gap_row(start, end, is_cursor, gutter));
@@ -2036,6 +2052,7 @@ impl App {
         rows: &mut Vec<Line<'static>>,
         n: usize,
         is_cursor: bool,
+        stripe: bool,
         gutter: usize,
         content_w: usize,
     ) {
@@ -2052,6 +2069,8 @@ impl App {
         let blank = " ".repeat(gutter);
         let row_style = if is_cursor {
             Style::default().bg(CURSOR_BG)
+        } else if stripe {
+            Style::default().bg(ZEBRA_BG)
         } else {
             Style::default()
         };
