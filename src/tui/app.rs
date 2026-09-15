@@ -23,7 +23,7 @@ use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 const HINT: &str =
-    "j/k f/b H/M/L · /search n/N :N goto · F filter h hl B mark x hide · T hist m menu · w wrap ? help q quit";
+    "j/k f/b H/M/L · /? search n/N :N goto · F filter h hl B mark x hide · T hist m menu · w wrap :help q quit";
 const CURSOR_BG: Color = Color::Indexed(236);
 // Faint zebra stripe on alternate logical lines; darker than CURSOR_BG so the
 // cursor line still stands out over a striped row. Tuned for dark terminals.
@@ -177,6 +177,9 @@ pub struct App {
     search_term: String,
     search_regex: bool,
     search_case: bool,
+    /// Direction of the last search: false = forward (`/`), true = backward (`?`).
+    /// `n` repeats in this direction, `N` in the opposite one.
+    search_reverse: bool,
     search_error: Option<&'static str>,
     /// Transient status-bar message (e.g. "no timestamps"); cleared on next keypress.
     hint: Option<&'static str>,
@@ -258,6 +261,7 @@ impl App {
             search_term: String::new(),
             search_regex: false,
             search_case: false,
+            search_reverse: false,
             search_error: None,
             hint: None,
             matches: Vec::new(),
@@ -531,12 +535,15 @@ impl App {
         }
         if c == "q" || c == "quit" {
             self.should_quit = true; // vim :q — quit straight away (read-only viewer)
+        } else if c == "help" || c == "h" {
+            self.overlay = Overlay::Help;
+            self.overlay_scroll = 0;
         } else if c == "$" {
             self.goto_line(self.total);
         } else if let Ok(n) = c.parse::<usize>() {
             self.goto_line(n);
         } else {
-            self.hint = Some("unknown command (try :N, :$, or :q)");
+            self.hint = Some("unknown command (try :N, :$, :help, or :q)");
         }
     }
 
@@ -647,26 +654,37 @@ impl App {
             }
         }
         self.refresh_matches_in_view();
-        if let Some(&first) = self.miv.first() {
-            if let Some(p) = self.pos_of_line(first) {
-                self.jump_to(p as i64);
-            }
-            self.scroll_to_col(first);
-        }
+        // Jump to the first match from the cursor in the search direction (inclusive
+        // of the cursor line), not the top of the document — so searching mid-file
+        // lands nearby. Wraps if there's nothing ahead.
+        self.jump_to_match_dir(!self.search_reverse, true);
     }
 
     // n / N: jump to the next/previous match relative to the *cursor* (vim
-    // style), so match navigation tracks wherever you've moved to. `miv` is
-    // sorted ascending. Wraps around the ends.
+    // style), so match navigation tracks wherever you've moved to. Exclusive of
+    // the cursor line so it always advances.
     fn goto_match_relative(&mut self, forward: bool) {
+        self.jump_to_match_dir(forward, false);
+    }
+
+    // Jump to a match relative to the cursor. `forward` picks the direction;
+    // `inclusive` allows landing on a match on the cursor's own line (used by the
+    // initial search, not by n/N). `miv` is sorted ascending; wraps around the ends.
+    fn jump_to_match_dir(&mut self, forward: bool, inclusive: bool) {
         if self.miv.is_empty() {
             return;
         }
         let cur = self.current_line().unwrap_or(0);
         let idx = if forward {
-            self.miv.iter().position(|&l| l > cur).unwrap_or(0)
+            self.miv
+                .iter()
+                .position(|&l| if inclusive { l >= cur } else { l > cur })
+                .unwrap_or(0)
         } else {
-            self.miv.iter().rposition(|&l| l < cur).unwrap_or(self.miv.len() - 1)
+            self.miv
+                .iter()
+                .rposition(|&l| if inclusive { l <= cur } else { l < cur })
+                .unwrap_or(self.miv.len() - 1)
         };
         self.match_idx = idx;
         let line = self.miv[idx];
@@ -949,7 +967,7 @@ impl App {
     fn handle_scroll_overlay_key(&mut self, key: KeyEvent) {
         let avail = self.overlay_avail.max(1);
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => self.overlay = Overlay::None,
+            KeyCode::Esc | KeyCode::Char('q') => self.overlay = Overlay::None,
             KeyCode::Char('j') | KeyCode::Down => self.overlay_scroll += 1,
             KeyCode::Char('k') | KeyCode::Up => {
                 self.overlay_scroll = self.overlay_scroll.saturating_sub(1)
@@ -1841,6 +1859,12 @@ impl App {
                 self.adjust_pos_for_wrap_toggle();
             }
             KeyCode::Char('/') => {
+                self.search_reverse = false;
+                self.mode = Mode::Search;
+                self.reset_input();
+            }
+            KeyCode::Char('?') => {
+                self.search_reverse = true;
                 self.mode = Mode::Search;
                 self.reset_input();
             }
@@ -1852,8 +1876,8 @@ impl App {
                 self.mode = Mode::Filter;
                 self.reset_input();
             }
-            KeyCode::Char('n') => self.goto_match_relative(true),
-            KeyCode::Char('N') => self.goto_match_relative(false),
+            KeyCode::Char('n') => self.goto_match_relative(!self.search_reverse),
+            KeyCode::Char('N') => self.goto_match_relative(self.search_reverse),
             KeyCode::Char('B') => self.toggle_bookmark(),
             KeyCode::Char('x') => self.hide_current_line(),
             KeyCode::Char('[') => self.goto_bookmark(false),
@@ -1862,10 +1886,6 @@ impl App {
             KeyCode::Enter => self.enter_action(),
             KeyCode::Char('+') | KeyCode::Char('=') => self.gap_action(true),
             KeyCode::Char('-') | KeyCode::Char('_') => self.gap_action(false),
-            KeyCode::Char('?') => {
-                self.overlay = Overlay::Help;
-                self.overlay_scroll = 0;
-            }
             KeyCode::Char('m') => {
                 self.overlay = Overlay::Menu;
                 self.menu_sel = 0;
@@ -2280,7 +2300,8 @@ impl App {
                     if self.search_regex { ".*" } else { "ab" },
                     if self.search_case { "Aa" } else { "aa" }
                 );
-                let mut spans = self.input_spans("/");
+                let prompt = if self.search_reverse { "?" } else { "/" };
+                let mut spans = self.input_spans(prompt);
                 spans.push(Span::styled(flags, dim));
                 Line::from(spans)
             }
@@ -2307,7 +2328,7 @@ impl App {
             }
             Mode::Command => {
                 let mut spans = self.input_spans(":");
-                spans.push(Span::styled("  line number · $ = last · q = quit · Enter", dim));
+                spans.push(Span::styled("  line number · $ = last · help · q = quit · Enter", dim));
                 Line::from(spans)
             }
             Mode::Hist => Line::from(Span::styled(
@@ -2399,14 +2420,19 @@ fn help_lines() -> Vec<Line<'static>> {
         "Movement   j/k or ↑/↓ move · f/b (or space/PgDn, ^F/^B) page · g/G top/bottom",
         "           H/M/L cursor to screen top/middle/bottom · :N go to line N · :$ last · :q quit",
         "Long lines ←/→ pan (half screen) · N←/→ pan N columns · 0 reset pan · w in-place wrap",
-        "Search     / search · n/N next/prev (from cursor) · ^R regex · ^A case · ↑/↓ history · Esc clear",
+        "Search     / forward · ? backward — both start from the cursor and wrap",
+        "           n/N next/prev (n follows the search direction, N reverses it)",
+        "           ^R regex · ^A case · ↑/↓ history · Esc clear the search",
         "Highlight  h add a coloured highlight term",
         "Filter     F add filter · o toggle AND/OR",
         "Bookmarks  B toggle on cursor line · [ / ] previous/next bookmark",
         "Hide       x hide the cursor line (collapses to a gap) · reveal the gap or menu X to undo",
         "Gaps       Enter/+ reveal from top · - reveal from bottom",
         "Expand     Enter on a line: JSON view, or wrapped view if it doesn't fit",
-        "Other      ? this help · q quit (confirm) · ^C quit now",
+        "Histogram  T toggle the time histogram · t brush it (←/→ move, a anchor, Enter apply, c clear)",
+        "Menu       m open the menu: edit filters/highlights, hide fields, toggle syntax/",
+        "           filter-colour/zebra, export the view (e) or a grep/awk command (g)",
+        "Other      :help this help · q quit (confirm) · ^C quit now",
     ];
     ROWS.iter()
         .map(|r| Line::from(Span::raw(r.to_string())))
@@ -2905,6 +2931,34 @@ mod tests {
         app.run_search("(");
         assert_eq!(app.search_error, Some("bad regex"));
         assert!(app.matches.is_empty());
+    }
+
+    #[test]
+    fn search_starts_from_cursor_not_top() {
+        // "hit" on lines 2, 5, 8. Start with the cursor mid-file.
+        let mut app = app_from(&["a", "hit", "c", "d", "hit", "f", "g", "hit", "i"]);
+        app.height = 20;
+        app.cursor = 5; // unfiltered: pos p → line p+1, so line 6
+        assert_eq!(app.current_line(), Some(6));
+
+        // Forward `/` lands on the next match at/after the cursor (line 8), not line 2.
+        app.search_reverse = false;
+        app.run_search("hit");
+        assert_eq!(app.current_line(), Some(8));
+
+        // `n` follows the search direction and advances, wrapping to line 2.
+        app.goto_match_relative(!app.search_reverse);
+        assert_eq!(app.current_line(), Some(2));
+
+        // Backward `?` from line 7 lands on the previous match (line 5).
+        app.cursor = 6; // line 7
+        app.search_reverse = true;
+        app.run_search("hit");
+        assert_eq!(app.current_line(), Some(5));
+
+        // `N` reverses the (backward) direction → moves forward to line 8.
+        app.goto_match_relative(app.search_reverse);
+        assert_eq!(app.current_line(), Some(8));
     }
 
     #[test]
