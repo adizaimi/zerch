@@ -2074,12 +2074,18 @@ impl App {
         } else {
             Style::default()
         };
+        // Cursor and zebra rows carry a background, so pad the content area with
+        // trailing spaces to the full width — otherwise the tint stops at the last
+        // character instead of running to the right edge.
+        let pad = is_cursor || stripe;
 
         if self.wrap {
             if styled.is_empty() {
-                rows.push(
-                    Line::from(vec![Span::styled(num, num_style), Span::raw(" ")]).style(row_style),
-                );
+                let mut spans = vec![Span::styled(num, num_style), Span::raw(" ")];
+                if pad {
+                    spans.push(Span::raw(" ".repeat(content_w)));
+                }
+                rows.push(Line::from(spans).style(row_style));
                 return;
             }
             let mut ci = 0;
@@ -2093,6 +2099,12 @@ impl App {
                 };
                 let mut spans = vec![g, Span::raw(" ")];
                 spans.extend(group_spans(&styled[ci..end]));
+                if pad {
+                    let shown = end - ci;
+                    if shown < content_w {
+                        spans.push(Span::raw(" ".repeat(content_w - shown)));
+                    }
+                }
                 rows.push(Line::from(spans).style(row_style));
                 ci = end;
                 first = false;
@@ -2102,7 +2114,7 @@ impl App {
             let end = (start + content_w).min(styled.len());
             let mut spans = vec![Span::styled(num, num_style), Span::raw(" ")];
             spans.extend(group_spans(&styled[start..end]));
-            if is_cursor {
+            if pad {
                 let shown = end - start;
                 if shown < content_w {
                     spans.push(Span::raw(" ".repeat(content_w - shown)));
