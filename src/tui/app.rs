@@ -315,9 +315,14 @@ impl App {
         // Counts are marked pending; the run-loop scheduler fills them in
         // between frames so the viewport shows immediately.
         self.reset_counts_pending();
-        self.bookmarks = v.bookmarks.into_iter().collect();
-        self.visible_lines = v.visible.into_iter().collect();
-        self.hidden_lines = v.hidden.into_iter().collect();
+        // A view string (especially a hand-edited or stale one) can carry line
+        // numbers past the end of this file — dropping them here keeps bookmarks,
+        // reveals, and hides from conjuring phantom rows beyond EOF.
+        let total = self.total;
+        let in_file = move |n: &usize| *n >= 1 && *n <= total;
+        self.bookmarks = v.bookmarks.into_iter().filter(in_file).collect();
+        self.visible_lines = v.visible.into_iter().filter(in_file).collect();
+        self.hidden_lines = v.hidden.into_iter().filter(in_file).collect();
         self.hide_cols_text = v.hide_cols;
         self.col_sep_text = if v.col_sep.is_empty() { ",".to_string() } else { v.col_sep };
         self.syntax_color = v.syntax;
@@ -3193,6 +3198,25 @@ mod tests {
         app2.apply_view(parse_view("filters=error&selected=2"));
         assert!(app2.visible_lines.contains(&2));
         assert_eq!(app2.current_line(), Some(2));
+    }
+
+    #[test]
+    fn apply_view_drops_line_refs_past_eof() {
+        use crate::view::state::parse_view;
+        // A 3-line file with a view that references lines beyond the end (and line 0).
+        let mut app = app_from(&["a", "b", "c"]);
+        app.apply_view(parse_view("bookmarks=2,9&visible=0,7-8&hidden=3,100&selected=50"));
+
+        // Only in-file line numbers survive; the out-of-range ones are dropped.
+        assert_eq!(app.bookmarks, [2].into_iter().collect());
+        assert!(app.visible_lines.is_empty()); // 0, 7, 8 all invalid
+        assert_eq!(app.hidden_lines, [3].into_iter().collect()); // 100 dropped
+
+        // No phantom row beyond EOF: the last displayed line never exceeds total.
+        let maxln = displayed_lines(&app).into_iter().max();
+        assert!(maxln.map_or(true, |m| m <= app.total));
+        // The out-of-range selected line doesn't move the cursor off the file.
+        assert!(app.current_line().map_or(true, |l| l <= app.total));
     }
 
     #[test]
