@@ -183,6 +183,9 @@ pub struct App {
     search_error: Option<&'static str>,
     /// Transient status-bar message (e.g. "no timestamps"); cleared on next keypress.
     hint: Option<&'static str>,
+    /// Transient vim-style notice shown (in pink) on the prompt line when a search
+    /// wraps past an end of the file; cleared on next keypress.
+    search_wrap: Option<&'static str>,
     matches: Vec<usize>,
     match_idx: usize,
     // Shared recent-input history across search / filter / highlight (newest first).
@@ -267,6 +270,7 @@ impl App {
             search_reverse: false,
             search_error: None,
             hint: None,
+            search_wrap: None,
             matches: Vec::new(),
             match_idx: 0,
             history: Vec::new(),
@@ -635,6 +639,7 @@ impl App {
 
     fn run_search(&mut self, term: &str) {
         self.mode = Mode::Normal;
+        self.search_wrap = None;
         if term.is_empty() {
             return;
         }
@@ -680,17 +685,34 @@ impl App {
             return;
         }
         let cur = self.current_line().unwrap_or(0);
-        let idx = if forward {
-            self.miv
+        // No match in the requested direction means we wrap around to the other end
+        // — flag it so the prompt line shows a vim-style notice.
+        let (idx, wrapped) = if forward {
+            match self
+                .miv
                 .iter()
                 .position(|&l| if inclusive { l >= cur } else { l > cur })
-                .unwrap_or(0)
+            {
+                Some(i) => (i, false),
+                None => (0, true),
+            }
         } else {
-            self.miv
+            match self
+                .miv
                 .iter()
                 .rposition(|&l| if inclusive { l <= cur } else { l < cur })
-                .unwrap_or(self.miv.len() - 1)
+            {
+                Some(i) => (i, false),
+                None => (self.miv.len() - 1, true),
+            }
         };
+        if wrapped {
+            self.search_wrap = Some(if forward {
+                "Search reached BOTTOM, continuing from TOP"
+            } else {
+                "Search reached TOP, continuing from BOTTOM"
+            });
+        }
         self.match_idx = idx;
         let line = self.miv[idx];
         if let Some(p) = self.pos_of_line(line) {
@@ -1690,6 +1712,7 @@ impl App {
         }
         // Any keypress clears a transient hint from the previous action.
         self.hint = None;
+        self.search_wrap = None;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && matches!(key.code, KeyCode::Char('c')) {
             self.should_quit = true;
@@ -2376,7 +2399,13 @@ impl App {
                 "time brush: ←/→ move · a anchor · Enter apply · c clear · T/Esc close",
                 Style::default().fg(Color::DarkGray),
             )),
-            Mode::Normal => Line::from(Span::styled(HINT, Style::default().fg(Color::DarkGray))),
+            Mode::Normal => match self.search_wrap {
+                Some(msg) => Line::from(Span::styled(
+                    msg,
+                    Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
+                )),
+                None => Line::from(Span::styled(HINT, Style::default().fg(Color::DarkGray))),
+            },
         }
     }
 }
@@ -3022,6 +3051,37 @@ mod tests {
         // `N` reverses the (backward) direction → moves forward to line 8.
         app.goto_match_relative(app.search_reverse);
         assert_eq!(app.current_line(), Some(8));
+    }
+
+    #[test]
+    fn search_wrap_sets_vim_style_notice() {
+        // "hit" on lines 2, 5, 8.
+        let mut app = app_from(&["a", "hit", "c", "d", "hit", "f", "g", "hit", "i"]);
+        app.height = 20;
+
+        // Cursor below the last match → forward `/` wraps to the top and notices it.
+        app.cursor = 8; // line 9
+        app.search_reverse = false;
+        app.run_search("hit");
+        assert_eq!(app.current_line(), Some(2));
+        assert_eq!(app.search_wrap, Some("Search reached BOTTOM, continuing from TOP"));
+
+        // A landing that doesn't wrap leaves no notice.
+        app.cursor = 0; // line 1, before every match
+        app.run_search("hit");
+        assert_eq!(app.current_line(), Some(2));
+        assert_eq!(app.search_wrap, None);
+
+        // Cursor above the first match → backward `?` wraps to the bottom.
+        app.cursor = 0; // line 1
+        app.search_reverse = true;
+        app.run_search("hit");
+        assert_eq!(app.current_line(), Some(8));
+        assert_eq!(app.search_wrap, Some("Search reached TOP, continuing from BOTTOM"));
+
+        // The notice is transient: any keypress clears it.
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.search_wrap, None);
     }
 
     #[test]
