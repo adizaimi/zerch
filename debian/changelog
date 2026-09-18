@@ -1,3 +1,16 @@
+zerch (0.7.5) unstable; urgency=medium
+
+  * TUI: searching now shows a vim-style notice on the prompt line (in pink) when
+    a search wraps past an end of the file — "Search reached BOTTOM, continuing
+    from TOP" for "/"/"n", and the reverse for "?"/"N". The notice clears on the
+    next keypress.
+  * TUI: a --view string (hand-edited, stale, or from a since-truncated file) that
+    names bookmarks, revealed ranges, hidden lines, or a selected line past the end
+    of the file no longer conjures phantom rows beyond EOF — such out-of-range line
+    references are now dropped when the view is applied.
+
+ -- Adi Zaimi <adizaimi@yahoo.com>  Fri, 18 Sep 2026 12:00:00 +0000
+
 zerch (0.7.4) unstable; urgency=medium
 
   * TUI: search now starts from the cursor instead of the top of the file. "/"
