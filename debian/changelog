@@ -1,3 +1,15 @@
+zerch (0.7.6) unstable; urgency=medium
+
+  * Large files open almost instantly: line boundaries are scanned up front,
+    while per-line timestamp/level metadata is indexed progressively in the
+    background. The status bar shows an "indexing NN%" segment until it's
+    done; the histogram shows a hint if opened before indexing finishes.
+  * A saved session or --view string whose search/filter needs a full-file
+    scan now resolves in the background on open instead of blocking the
+    first frame; --web still waits for indexing to finish before serving.
+
+ -- Adi Zaimi <adizaimi@yahoo.com>  Thu, 15 Oct 2026 11:55:19 -0400
+
 zerch (0.7.5) unstable; urgency=medium
 
   * TUI: searching now shows a vim-style notice on the prompt line (in pink) when

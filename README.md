@@ -11,8 +11,10 @@ Design goals:
 
 - **Small footprint** — one lean binary, few dependencies, easy to package for Debian.
 - **Adaptable to scale** — an in-memory index (`mmap` + parallel scan) opens multi-GB
-  files near-instantly (a 1.36 GB / ~900k-line file indexes in ~1 s) and searches
-  them in well under a second, with bounded memory.
+  files near-instantly: the file is scrollable as soon as line boundaries are found,
+  while per-line metadata (timestamps, levels) fills in progressively in the
+  background — the status bar shows `indexing NN%` until it's done. Searches run
+  in well under a second, with bounded memory.
 - **Portable views** — the `--view` string captures the full view (filters, highlights,
   bookmarks, revealed ranges, search, selected line) as one compact, shareable token.
 
@@ -58,10 +60,16 @@ path and stored (private, `0600`) under `$XDG_STATE_HOME/zerch/sessions/`.
 
 Piped/stdin input has no session (there's no stable file to key on).
 
+On a large file, restoring a saved (or `--view`-given) search or filter runs as a
+background scan instead of blocking the first frame — the view updates in place
+once it resolves.
+
 ### Web UI (`--web`)
 
 `zerch <file> --web` opens the log in a local browser tab instead of the TUI, reusing
-the same engine and view model. It's a fast local viewer with clickable filters
+the same engine and view model. Unlike the TUI, `--web` waits for indexing to finish
+before serving, so the page always loads fully colored and searchable. It's a fast
+local viewer with clickable filters
 (with per-term counts and AND/OR), highlights, log-level chips, live search with
 `n`/`N` navigation, bookmarks and revealed ranges, hide/reveal, a minimap, a
 drag-to-filter time histogram, per-line JSON pretty-print and wrap, and a
@@ -92,9 +100,9 @@ printed. Stop it with Ctrl+C.
 | | `f`/`b`, `Space`/`PgDn`/`PgUp`, `^F`/`^B` | page down / up |
 | | `g` / `G` | top / bottom |
 | | `H` / `M` / `L` | cursor to screen top / middle / bottom (no scroll) |
-| | `:N` `Enter` · `:$` · `:q` | go to line N · last line · quit |
+| | `:N` `Enter` · `:$` · `:q` · `:help` | go to line N · last line · quit · help overlay (the `:` prompt keeps its own `↑`/`↓` history) |
 | Long lines | `←` / `→` | pan half a screen · `N`+`←`/`→` pan N columns · `0` reset pan · `w` toggle in-place wrap |
-| Search | `/` | search · `n`/`N` next/prev from cursor · `^R` regex · `^A` case · `↑`/`↓` history · `Esc` clear |
+| Search | `/` fwd · `?` back | search from the cursor, wrapping (a vim-style notice shows on wrap) · `n`/`N` repeat in the search direction / reverse it · `^R` regex · `^A` case · `↑`/`↓` history · `Esc` clear |
 | Highlight | `h` | add a coloured highlight term |
 | Filter | `F` add · `o` toggle AND/OR | reduces the view to matching lines (gaps collapse the rest) |
 | Bookmarks | `B` toggle · `[` / `]` prev/next | bookmarked lines stay visible when filtered; edit the list inline in the `m` menu (accepts ranges, e.g. `1,3-5,8`) |
@@ -102,9 +110,9 @@ printed. Stop it with Ctrl+C.
 | Gaps | `Enter`/`+` from top · `-` from bottom | reveal hidden lines a chunk at a time |
 | Expand | `Enter` on a line | JSON view, or a wrapped view if the line doesn't fit |
 | Histogram | `T` show/hide · `t` re-enter | `←/→` move · `a` anchor · `Enter` apply · `c` clear time range |
-| Menu | `m` | toggle/edit/delete filters & highlights; `e` export view string; `g` export grep/awk |
+| Menu | `m` | toggle/edit/delete filters & highlights; `e` export view string; `g` export grep/awk; `l`/`s`/`z` toggle filter-colour / syntax-colour / zebra striping (remembered per file) |
 | Field hiding | in the menu | edit `Separator` and `Hide Columns` (e.g. `1,2,5` or `1,3-5,8`) inline (Enter to edit) — chosen columns render as `…` |
-| Other | `?` help · `q` quit (confirm) · `^C` quit now | |
+| Other | `:help` help · `q` quit (confirm) · `^C` quit now | |
 
 ## Building
 
