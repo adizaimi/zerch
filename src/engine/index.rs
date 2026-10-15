@@ -2,7 +2,16 @@
 //! boundaries, and record per-line metadata (timestamp + level). Line *content*
 //! is never copied — [`LineIndex::get_line`] returns a slice of the mapping
 //! (ANSI-stripped on the fly), so opening a multi-GB file is effectively instant
-//! and memory stays bounded to ~17 bytes of metadata per line.
+//! and memory stays bounded to a small, fixed amount of metadata per line.
+//!
+//! Indexing is split in two: finding line boundaries (`open`) is fast and
+//! synchronous, so the file is immediately scrollable/searchable by content.
+//! Per-line timestamp + level extraction is comparatively expensive (JSON
+//! lines need a full parse) and runs on a dedicated background thread,
+//! chunk by chunk, so it never blocks the caller. Until a line's chunk has
+//! landed, it simply reads as "no timestamp / no level" — indistinguishable
+//! from a real miss, and self-correcting on the next read once the
+//! background thread catches up.
 //!
 //! This replaces the Node app's SQLite `log_index` table for the common case;
 //! the optional persistent SQLite/FTS5 tier is layered on later (Phase 9).
@@ -16,14 +25,16 @@ use std::borrow::Cow;
 use std::fs::File;
 use std::io;
 use std::path::Path;
+use std::sync::atomic::{AtomicI64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread;
 
 const NO_TS: i64 = i64::MIN;
 
-// ---- Packed metadata columns ---------------------------------------------
-//
-// Per-line metadata dominates RAM at high line counts, so we pack it. The
-// public API (get_line/ts_of/level_of) is unchanged — these types only exist
-// inside LineIndex and each expose a single `get(n)` at line-number granularity.
+// Lines processed per background-indexing step. Small enough that the first
+// screenful of a huge file gets its colours within a chunk or two of opening;
+// large enough that thread-wakeup/rayon-dispatch overhead stays negligible.
+const META_CHUNK_LINES: usize = 32_768;
 
 /// Line-start byte offsets. Files whose length fits in `u32` (`< 4 GiB`) use a
 /// half-size Vec; larger files fall back to `u64`.
@@ -68,102 +79,6 @@ impl LineStarts {
     }
 }
 
-/// Level codes (0..=6) packed as nibbles — two per byte, halving this column.
-struct PackedLevels {
-    data: Vec<u8>,
-    n: usize,
-}
-
-impl PackedLevels {
-    fn from_iter(src: &[Level]) -> Self {
-        let n = src.len();
-        let mut data = vec![0u8; n.div_ceil(2)];
-        for (i, &v) in src.iter().enumerate() {
-            let byte = &mut data[i / 2];
-            let v = v & 0x0f;
-            if i % 2 == 0 {
-                *byte = (*byte & 0xf0) | v;
-            } else {
-                *byte = (*byte & 0x0f) | (v << 4);
-            }
-        }
-        Self { data, n }
-    }
-    fn get(&self, i: usize) -> Level {
-        if i >= self.n {
-            return LEVEL_NONE;
-        }
-        let byte = self.data[i / 2];
-        if i % 2 == 0 { byte & 0x0f } else { byte >> 4 }
-    }
-}
-
-/// Per-line timestamps. When the span (max - min) fits in `i32` ms (~24 days)
-/// we store `i32` deltas from a base; otherwise we keep full `i64` values.
-/// Present-vs-absent is packed as a 1-bit-per-line bitset (`i64::MIN` sentinel
-/// would work too, but a dedicated bitset keeps the "delta" code branch-free).
-enum TsColumn {
-    Delta { base: i64, deltas: Vec<i32> },
-    Full(Vec<i64>),
-}
-
-impl TsColumn {
-    /// Build from a Vec that uses `NO_TS` for absent lines.
-    fn build(xs: Vec<i64>) -> (Self, Vec<u64>) {
-        let n = xs.len();
-        // Presence bitset (1 bit per line).
-        let mut present = vec![0u64; n.div_ceil(64)];
-        let mut min = i64::MAX;
-        let mut max = i64::MIN;
-        for (i, &v) in xs.iter().enumerate() {
-            if v != NO_TS {
-                present[i / 64] |= 1u64 << (i % 64);
-                if v < min {
-                    min = v;
-                }
-                if v > max {
-                    max = v;
-                }
-            }
-        }
-        // Choose the compact representation when the whole span fits in i32 ms.
-        // (Absent entries store 0 in the delta slot; presence bitset gates reads.)
-        if min != i64::MAX && max.saturating_sub(min) <= i32::MAX as i64 {
-            let base = min;
-            let deltas: Vec<i32> = xs
-                .iter()
-                .map(|&v| if v == NO_TS { 0 } else { (v - base) as i32 })
-                .collect();
-            (Self::Delta { base, deltas }, present)
-        } else {
-            (Self::Full(xs), present)
-        }
-    }
-    fn get(&self, i: usize) -> i64 {
-        match self {
-            Self::Delta { base, deltas } => *base + deltas[i] as i64,
-            Self::Full(xs) => xs[i],
-        }
-    }
-    fn len(&self) -> usize {
-        match self {
-            Self::Delta { deltas, .. } => deltas.len(),
-            Self::Full(xs) => xs.len(),
-        }
-    }
-    fn shrink(&mut self) {
-        match self {
-            Self::Delta { deltas, .. } => deltas.shrink_to_fit(),
-            Self::Full(xs) => xs.shrink_to_fit(),
-        }
-    }
-}
-
-#[inline]
-fn is_present(present: &[u64], i: usize) -> bool {
-    (present[i / 64] >> (i % 64)) & 1 == 1
-}
-
 #[derive(Clone, Copy)]
 pub struct IndexOptions {
     /// Interpretation for offset-less timestamps. Defaults to `Utc` (deterministic);
@@ -187,20 +102,27 @@ pub struct LineIndex {
     /// `starts.len() == total_lines + 1`; `starts[i]` is the byte offset of line
     /// `i+1`, and `starts[total_lines]` is the file length (sentinel end).
     starts: LineStarts,
-    ts: TsColumn,
-    /// 1 bit per line: whether `ts.get(i)` holds a real timestamp.
-    ts_present: Vec<u64>,
-    levels: PackedLevels,
+    /// Per-line timestamp (epoch ms), `NO_TS` for "no timestamp" *or* "not
+    /// indexed yet" — the two are indistinguishable and that's fine, since the
+    /// latter self-corrects the moment the background thread reaches this line.
+    ts: Vec<AtomicI64>,
+    /// Per-line level code, `LEVEL_NONE` for "no level" *or* "not indexed yet".
+    levels: Vec<AtomicU8>,
+    /// How many lines (from the start) the background thread has finished.
+    /// Chunks are processed strictly in ascending order by a single thread, so
+    /// this count doubles as a completion watermark. `fetch_add` uses `Release`
+    /// after a chunk's cells are written; readers use `Acquire` so a caller that
+    /// observes completion is guaranteed to see every cell's final value.
+    indexed_count: AtomicUsize,
     max_line_len: usize,
 }
 
 impl LineIndex {
-    /// Open and index a file. `on_progress` is called with a 0..=100 percentage.
-    pub fn open<F: FnMut(f64)>(
-        path: &Path,
-        opts: IndexOptions,
-        mut on_progress: F,
-    ) -> io::Result<LineIndex> {
+    /// Open a file: mmap it and find line boundaries synchronously (fast — the
+    /// file is immediately scrollable/searchable by content), then kick off
+    /// per-line timestamp/level extraction on a background thread. Poll
+    /// [`metadata_progress`]/[`metadata_complete`] to track that background work.
+    pub fn open(path: &Path, opts: IndexOptions) -> io::Result<Arc<LineIndex>> {
         let file = File::open(path)?;
         let len = file.metadata()?.len() as usize;
 
@@ -218,57 +140,80 @@ impl LineIndex {
         let raw_starts = find_line_starts_parallel(bytes);
         let total = raw_starts.len();
 
-        // Per-line timestamp + level, parsed in parallel. Crucially we do NOT
-        // ANSI-strip the whole line here — that would scan the entire file through
-        // a regex. Non-JSON lines only need their prefix (where the ts/level live);
-        // only JSON lines (rare) are stripped/parsed in full.
-        let popts = ParseOptions {
-            default_year: opts.default_year,
-            naive_zone: Some(opts.naive_zone),
-        };
-        let end_of = |i: usize| -> u64 {
-            if i + 1 < total {
-                raw_starts[i + 1]
-            } else {
-                len as u64
-            }
-        };
-        let (ts_raw, levels_raw): (Vec<i64>, Vec<Level>) = (0..total)
-            .into_par_iter()
-            .map(|i| {
-                let raw = trim_eol(&bytes[raw_starts[i] as usize..end_of(i) as usize]);
-                let p = parse_meta(raw, popts);
-                (p.ts.unwrap_or(NO_TS), p.level)
-            })
-            .unzip();
         // Longest line in bytes (incl. terminator) — a cheap upper bound for the
-        // horizontal-scroll limit; avoids a second full pass over the content.
+        // horizontal-scroll limit; depends only on line starts, not parsed
+        // metadata, so it's part of the fast structural phase.
         let max_line_len = (0..total)
-            .map(|i| (end_of(i) - raw_starts[i]) as usize)
+            .map(|i| {
+                let end = if i + 1 < total { raw_starts[i + 1] } else { len as u64 };
+                (end - raw_starts[i]) as usize
+            })
             .max()
             .unwrap_or(0);
 
-        // Pack the columns and release growth-strategy over-allocation (these
-        // Vecs are built to final size and never grow again).
         let mut starts = LineStarts::from_u64s(len as u64, raw_starts);
         starts.push_end(len as u64); // sentinel end
         starts.shrink();
-        let (mut ts, mut ts_present) = TsColumn::build(ts_raw);
-        ts.shrink();
-        ts_present.shrink_to_fit();
-        let mut levels = PackedLevels::from_iter(&levels_raw);
-        levels.data.shrink_to_fit();
 
-        on_progress(100.0);
+        let ts: Vec<AtomicI64> = (0..total).map(|_| AtomicI64::new(NO_TS)).collect();
+        let levels: Vec<AtomicU8> = (0..total).map(|_| AtomicU8::new(LEVEL_NONE)).collect();
 
-        Ok(LineIndex {
+        let index = Arc::new(LineIndex {
             mmap,
             starts,
             ts,
-            ts_present,
             levels,
+            indexed_count: AtomicUsize::new(0),
             max_line_len,
-        })
+        });
+
+        if total > 0 {
+            let bg = Arc::clone(&index);
+            let popts = ParseOptions {
+                default_year: opts.default_year,
+                naive_zone: Some(opts.naive_zone),
+            };
+            thread::spawn(move || bg.index_metadata_in_background(popts));
+        }
+
+        Ok(index)
+    }
+
+    // Parse timestamp + level for every line, one chunk at a time, publishing
+    // progress after each chunk. Each chunk is itself parsed in parallel across
+    // the global rayon pool; only the chunk *sequencing* is single-threaded here.
+    fn index_metadata_in_background(&self, popts: ParseOptions) {
+        let total = self.total_lines();
+        let bytes = self.bytes();
+        let mut start = 0;
+        while start < total {
+            let end = (start + META_CHUNK_LINES).min(total);
+            (start..end).into_par_iter().for_each(|i| {
+                let lo = self.starts.get(i) as usize;
+                let hi = self.starts.get(i + 1) as usize;
+                let raw = trim_eol(&bytes[lo..hi]);
+                let p = parse_meta(raw, popts);
+                self.ts[i].store(p.ts.unwrap_or(NO_TS), Ordering::Relaxed);
+                self.levels[i].store(p.level, Ordering::Relaxed);
+            });
+            self.indexed_count.fetch_add(end - start, Ordering::Release);
+            start = end;
+        }
+    }
+
+    /// Fraction (0.0..=1.0) of lines whose timestamp/level have been extracted.
+    pub fn metadata_progress(&self) -> f64 {
+        let total = self.total_lines();
+        if total == 0 {
+            return 1.0;
+        }
+        (self.indexed_count.load(Ordering::Acquire) as f64 / total as f64).min(1.0)
+    }
+
+    /// True once every line's timestamp/level has been extracted. `time_bounds`/
+    /// `histogram` should only be called once this is true.
+    pub fn metadata_complete(&self) -> bool {
+        self.indexed_count.load(Ordering::Acquire) >= self.total_lines()
     }
 
     pub fn total_lines(&self) -> usize {
@@ -305,34 +250,35 @@ impl LineIndex {
         (lo..=hi).map(|n| self.get_line(n)).collect()
     }
 
-    /// Timestamp (epoch ms) of a 1-based line, if it carried one.
+    /// Timestamp (epoch ms) of a 1-based line, if it carried one (or `None` if its
+    /// background metadata hasn't landed yet — indistinguishable from a real miss,
+    /// and self-correcting on the next call once it has).
     pub fn ts_of(&self, n: usize) -> Option<i64> {
-        if n == 0 || n > self.ts.len() {
+        if n == 0 || n > self.total_lines() {
             return None;
         }
-        let i = n - 1;
-        is_present(&self.ts_present, i).then(|| self.ts.get(i))
+        let v = self.ts[n - 1].load(Ordering::Relaxed);
+        (v != NO_TS).then_some(v)
     }
 
-    /// Level code of a 1-based line (0 = none).
+    /// Level code of a 1-based line (0 = none, or not indexed yet).
     pub fn level_of(&self, n: usize) -> Level {
         if n == 0 || n > self.total_lines() {
             LEVEL_NONE
         } else {
-            self.levels.get(n - 1)
+            self.levels[n - 1].load(Ordering::Relaxed)
         }
     }
 
     /// `(min_ts, max_ts, count)` over timestamped lines, or `None` if none carry a
-    /// timestamp.
+    /// timestamp. Only meaningful once [`metadata_complete`] is true.
     pub fn time_bounds(&self) -> Option<(i64, i64, usize)> {
-        let n = self.ts.len();
         let mut min = i64::MAX;
         let mut max = i64::MIN;
         let mut count = 0usize;
-        for i in 0..n {
-            if is_present(&self.ts_present, i) {
-                let v = self.ts.get(i);
+        for cell in &self.ts {
+            let v = cell.load(Ordering::Relaxed);
+            if v != NO_TS {
                 if v < min {
                     min = v;
                 }
@@ -347,6 +293,7 @@ impl LineIndex {
 
     /// Bucket the timestamped lines into `buckets` bins for the histogram: a count
     /// and the most-severe level per bucket. `None` if the file has no timestamps.
+    /// Only meaningful once [`metadata_complete`] is true.
     pub fn histogram(&self, buckets: usize) -> Option<Histogram> {
         let (min_ts, max_ts, _) = self.time_bounds()?;
         let buckets = buckets.max(1);
@@ -355,13 +302,13 @@ impl LineIndex {
         let mut counts = vec![0u64; buckets];
         let mut max_level = vec![LEVEL_NONE; buckets];
         for i in 0..self.ts.len() {
-            if !is_present(&self.ts_present, i) {
+            let t = self.ts[i].load(Ordering::Relaxed);
+            if t == NO_TS {
                 continue;
             }
-            let t = self.ts.get(i);
             let b = (((t - min_ts) / bucket_ms) as usize).min(buckets - 1);
             counts[b] += 1;
-            let lvl = self.levels.get(i);
+            let lvl = self.levels[i].load(Ordering::Relaxed);
             if lvl > max_level[b] {
                 max_level[b] = lvl;
             }
@@ -474,24 +421,29 @@ fn clean_str(raw: &[u8]) -> Cow<'_, str> {
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, Ordering as StdOrdering};
 
     fn write_temp(bytes: &[u8]) -> std::path::PathBuf {
         static N: AtomicU64 = AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(
             "zerch_idx_{}_{}.log",
             std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
+            N.fetch_add(1, StdOrdering::Relaxed)
         ));
         let mut f = File::create(&p).unwrap();
         f.write_all(bytes).unwrap();
         p
     }
 
-    fn open(bytes: &[u8]) -> LineIndex {
+    // Opens and blocks until background metadata indexing has finished, so
+    // existing synchronous test assertions on level_of/ts_of/etc. keep working.
+    fn open(bytes: &[u8]) -> Arc<LineIndex> {
         let p = write_temp(bytes);
-        let idx = LineIndex::open(&p, IndexOptions::default(), |_| {}).unwrap();
+        let idx = LineIndex::open(&p, IndexOptions::default()).unwrap();
         let _ = std::fs::remove_file(&p);
+        while !idx.metadata_complete() {
+            std::thread::yield_now();
+        }
         idx
     }
 
@@ -607,39 +559,19 @@ mod tests {
     }
 
     #[test]
-    fn packed_columns_round_trip() {
-        // levels: nibble pack should survive 0..=6 across even/odd indexes.
-        let src: Vec<Level> = (0..17).map(|i| (i as u8) % 7).collect();
-        let p = PackedLevels::from_iter(&src);
-        for (i, &v) in src.iter().enumerate() {
-            assert_eq!(p.get(i), v, "level mismatch at {i}");
-        }
-        // LineStarts: small path uses u32 halving.
+    fn line_starts_small_vs_large() {
+        // Small path uses u32 halving for files under 4 GiB.
         let xs = vec![0u64, 100, 5000, 40000];
         let ls = LineStarts::from_u64s(u32::MAX as u64, xs.clone());
         assert!(matches!(ls, LineStarts::Small(_)));
         for (i, &v) in xs.iter().enumerate() {
             assert_eq!(ls.get(i), v);
         }
-        // TsColumn: contiguous timestamps fit in i32-delta.
-        let base = 1_700_000_000_000i64;
-        let ts = vec![NO_TS, base, NO_TS, base + 1_000, base + 5_000];
-        let (col, pres) = TsColumn::build(ts.clone());
-        assert!(matches!(col, TsColumn::Delta { .. }));
-        for (i, &v) in ts.iter().enumerate() {
-            if v == NO_TS {
-                assert!(!is_present(&pres, i));
-            } else {
-                assert!(is_present(&pres, i));
-                assert_eq!(col.get(i), v);
-            }
-        }
-        // Huge span → falls back to Full.
-        let ts = vec![base, base + (i32::MAX as i64) + 1];
-        let (col, _) = TsColumn::build(ts.clone());
-        assert!(matches!(col, TsColumn::Full(_)));
-        for (i, &v) in ts.iter().enumerate() {
-            assert_eq!(col.get(i), v);
+        // Large path is used once the file itself is >= 4 GiB.
+        let ls = LineStarts::from_u64s(u32::MAX as u64 + 1, xs.clone());
+        assert!(matches!(ls, LineStarts::Large(_)));
+        for (i, &v) in xs.iter().enumerate() {
+            assert_eq!(ls.get(i), v);
         }
     }
 
@@ -651,24 +583,19 @@ mod tests {
             eprintln!("skip: no /tmp/ws.log");
             return;
         }
-        let idx = LineIndex::open(path, IndexOptions::default(), |_| {}).unwrap();
+        let idx = open(&std::fs::read(path).unwrap());
         let n = idx.total_lines();
         let starts_b = match &idx.starts {
             LineStarts::Small(v) => v.capacity() * 4,
             LineStarts::Large(v) => v.capacity() * 8,
         };
-        let ts_b = match &idx.ts {
-            TsColumn::Delta { deltas, .. } => deltas.capacity() * 4,
-            TsColumn::Full(v) => v.capacity() * 8,
-        };
-        let present_b = idx.ts_present.capacity() * 8;
-        let levels_b = idx.levels.data.capacity();
-        let total = starts_b + ts_b + present_b + levels_b;
+        let ts_b = idx.ts.capacity() * std::mem::size_of::<AtomicI64>();
+        let levels_b = idx.levels.capacity() * std::mem::size_of::<AtomicU8>();
+        let total = starts_b + ts_b + levels_b;
         eprintln!(
-            "{n} lines · starts {} MiB · ts {} MiB · present {} KiB · levels {} KiB · total {} MiB ({:.1} B/line)",
+            "{n} lines · starts {} MiB · ts {} MiB · levels {} KiB · total {} MiB ({:.1} B/line)",
             starts_b / (1024 * 1024),
             ts_b / (1024 * 1024),
-            present_b / 1024,
             levels_b / 1024,
             total / (1024 * 1024),
             total as f64 / n as f64
@@ -684,8 +611,12 @@ mod tests {
             return;
         }
         let t = std::time::Instant::now();
-        let idx = LineIndex::open(path, IndexOptions::default(), |_| {}).unwrap();
-        eprintln!("indexed {} lines in {:?}", idx.total_lines(), t.elapsed());
+        let idx = LineIndex::open(path, IndexOptions::default()).unwrap();
+        eprintln!("structural open of {} lines in {:?}", idx.total_lines(), t.elapsed());
+        while !idx.metadata_complete() {
+            std::thread::yield_now();
+        }
+        eprintln!("metadata fully indexed in {:?}", t.elapsed());
     }
 
     #[test]
@@ -728,5 +659,16 @@ mod tests {
         let no_nl = open(b"only line");
         assert_eq!(no_nl.total_lines(), 1);
         assert_eq!(no_nl.get_line(1), "only line");
+    }
+
+    #[test]
+    fn metadata_progress_reaches_one() {
+        let mut c = Vec::new();
+        for i in 0..(META_CHUNK_LINES * 2 + 100) {
+            c.extend_from_slice(format!("line {i}\n").as_bytes());
+        }
+        let idx = open(&c); // waits for completion internally
+        assert!(idx.metadata_complete());
+        assert_eq!(idx.metadata_progress(), 1.0);
     }
 }

@@ -202,7 +202,7 @@ mod tests {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    fn open_lines(lines: &[&str]) -> LineIndex {
+    fn open_lines(lines: &[&str]) -> std::sync::Arc<LineIndex> {
         static N: AtomicU64 = AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(
             "zerch_search_{}_{}.log",
@@ -213,8 +213,13 @@ mod tests {
             .unwrap()
             .write_all(lines.join("\n").as_bytes())
             .unwrap();
-        let idx = LineIndex::open(&p, IndexOptions::default(), |_| {}).unwrap();
+        let idx = LineIndex::open(&p, IndexOptions::default()).unwrap();
         let _ = std::fs::remove_file(&p);
+        // `time_scope`/`level_scope` tests depend on ts_of/level_of right after
+        // this returns; wait for the background metadata indexing to finish.
+        while !idx.metadata_complete() {
+            std::thread::yield_now();
+        }
         idx
     }
 
@@ -225,7 +230,7 @@ mod tests {
         SearchTerm::new(term, op)
     }
 
-    fn dataset() -> LineIndex {
+    fn dataset() -> std::sync::Arc<LineIndex> {
         open_lines(&[
             "ERROR something timeout", // 1
             "INFO all good",           // 2
@@ -328,7 +333,7 @@ mod tests {
         );
     }
 
-    fn timed() -> LineIndex {
+    fn timed() -> std::sync::Arc<LineIndex> {
         open_lines(&[
             "2026-06-20T00:00:00Z ERROR a", // 1
             "2026-06-20T01:00:00Z INFO b",  // 2

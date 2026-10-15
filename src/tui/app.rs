@@ -15,6 +15,9 @@ use crate::view::shell::{build_shell_command, ShellCommandOptions, ShellFilter};
 use crate::view::state::{serialize_view, FilterEntry, FilterMode, HighlightEntry, ViewState};
 use crate::view::HIGHLIGHT_PALETTE;
 use std::collections::{BTreeSet, HashMap};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
+use std::thread;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -129,6 +132,64 @@ impl Count {
     }
 }
 
+// A snapshot of the fields `compute_restore_for` needs, cheap to clone into a
+// background thread (and to compare against later, to detect a stale result).
+#[derive(Clone)]
+struct RestoreSnapshot {
+    search_term: String,
+    search_regex: bool,
+    search_case: bool,
+    search_error: Option<&'static str>,
+    filters: Vec<FilterEntry>,
+    filter_mode: FilterMode,
+    time_range: Option<(i64, i64)>,
+}
+
+// The whole-file-scan results a view restore may need: search matches, and —
+// only when filters/time-range actually narrow the view — the filter match
+// cache `recompute()` would otherwise compute inline.
+struct RestoreComputed {
+    matches: Vec<usize>,
+    filter_cache: Option<Vec<usize>>,
+}
+
+// Pure w.r.t. `App` (only touches the index + the snapshot), so it can run on
+// a background thread. Mirrors `recompute()`'s search-matching logic exactly;
+// `None` filter_cache means "unfiltered — the cheap path in `recompute()`/
+// `apply_restore` handles it without a scan".
+fn compute_restore_for(index: &LineIndex, s: &RestoreSnapshot) -> RestoreComputed {
+    let matches = if !s.search_term.is_empty() && s.search_error.is_none() {
+        search(
+            index,
+            &[SearchTerm::new(&s.search_term, Op::And).case(s.search_case).rx(s.search_regex)],
+            &Scope::default(),
+        )
+        .map(|r| r.matching_lines)
+        .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let op = match s.filter_mode {
+        FilterMode::And => Op::And,
+        FilterMode::Or => Op::Or,
+    };
+    let enabled: Vec<SearchTerm> = s
+        .filters
+        .iter()
+        .filter(|f| f.enabled && !f.term.is_empty() && !(f.regex && bad_regex(&f.term)))
+        .map(|f| SearchTerm::new(&f.term, op).case(f.case_sensitive).rx(f.regex).neg(f.negate))
+        .collect();
+    let filter_cache = if enabled.is_empty() && s.time_range.is_none() {
+        None
+    } else {
+        let scope = Scope { time_range: s.time_range, levels: Vec::new() };
+        Some(search(index, &enabled, &scope).map(|r| r.matching_lines).unwrap_or_default())
+    };
+
+    RestoreComputed { matches, filter_cache }
+}
+
 // A full-screen overlay above the viewport. Text overlays (view string / shell
 // command) carry their own content; the rest render from a source line.
 enum Overlay {
@@ -141,7 +202,7 @@ enum Overlay {
 }
 
 pub struct App {
-    index: LineIndex,
+    index: Arc<LineIndex>,
     file_name: String,
     total: usize,
     displayed: Option<Vec<DisplayedItem>>,
@@ -240,10 +301,20 @@ pub struct App {
     pub should_quit: bool,
     /// Set on Ctrl-Z; the run loop suspends the process to the background.
     pub suspend: bool,
+
+    /// A background-computed session-restore result (search matches / filter
+    /// cache), in flight when opening a file whose saved view has an active
+    /// search or filter — see [`begin_apply_view_async`]. `None` once applied
+    /// (or when there was nothing expensive to restore in the first place).
+    restore_rx: Option<Receiver<(RestoreComputed, Option<usize>)>>,
+    /// What was requested of the in-flight restore above, so a stale result
+    /// (the user changed the search/filters by hand before it landed) is
+    /// dropped instead of clobbering their edit.
+    restore_snapshot_pending: Option<RestoreSnapshot>,
 }
 
 impl App {
-    pub fn new(index: LineIndex, file_name: String) -> Self {
+    pub fn new(index: Arc<LineIndex>, file_name: String) -> Self {
         let total = index.total_lines();
         App {
             index,
@@ -303,15 +374,107 @@ impl App {
             confirm_quit: false,
             should_quit: false,
             suspend: false,
+            restore_rx: None,
+            restore_snapshot_pending: None,
         }
     }
 
     /// Restore a saved view (filters/highlights/bookmarks/revealed ranges/search
-    /// and the selected line, revealing it if it's filtered out).
+    /// and the selected line, revealing it if it's filtered out). Synchronous —
+    /// on a huge file this can take a visible moment if the view has an active
+    /// search or filter (see [`begin_apply_view_async`] for the non-blocking
+    /// startup path).
     pub fn apply_view(&mut self, v: ViewState) {
+        self.apply_view_fields(&v);
+        let snapshot = self.restore_snapshot();
+        let restored = compute_restore_for(&self.index, &snapshot);
+        self.apply_restore(restored, v.selected);
+    }
+
+    /// Like [`apply_view`], but defers the expensive part — resolving a saved
+    /// search term or filter set, which needs a whole-file scan — to a
+    /// background thread when there's one to defer, so the first frame shows
+    /// the file's contents immediately instead of waiting on that scan. The
+    /// run loop's idle branch calls [`poll_pending_restore`] to pick up the
+    /// result once it lands. Meant for the startup restore path only.
+    pub fn begin_apply_view_async(&mut self, v: ViewState) {
+        self.apply_view_fields(&v);
+        let snapshot = self.restore_snapshot();
+        let needs_scan = (!snapshot.search_term.is_empty() && snapshot.search_error.is_none())
+            || snapshot
+                .filters
+                .iter()
+                .any(|f| f.enabled && !f.term.is_empty() && !(f.regex && bad_regex(&f.term)))
+            || snapshot.time_range.is_some();
+        if !needs_scan {
+            // Nothing expensive to resolve (no search, no active filter) — just
+            // take the normal, already-cheap synchronous path.
+            let restored = compute_restore_for(&self.index, &snapshot);
+            self.apply_restore(restored, v.selected);
+            return;
+        }
+        let index = Arc::clone(&self.index);
+        let selected = v.selected;
+        let thread_snapshot = snapshot.clone();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let restored = compute_restore_for(&index, &thread_snapshot);
+            let _ = tx.send((restored, selected));
+        });
+        self.restore_rx = Some(rx);
+        self.restore_snapshot_pending = Some(snapshot);
+    }
+
+    /// True while a background session-restore scan (see
+    /// [`begin_apply_view_async`]) is still in flight.
+    pub fn has_pending_restore(&self) -> bool {
+        self.restore_rx.is_some()
+    }
+
+    /// True while the file's background timestamp/level metadata indexing is
+    /// still in progress — the run loop uses this to decide whether to keep
+    /// waking up periodically to refresh the status bar's progress percentage.
+    pub fn is_indexing(&self) -> bool {
+        !self.index.metadata_complete()
+    }
+
+    /// Drain the background session-restore result, if it's ready, and apply
+    /// it — unless the user has since changed the search/filters by hand, in
+    /// which case the (now-stale) result is dropped silently.
+    pub fn poll_pending_restore(&mut self) {
+        let Some(rx) = &self.restore_rx else { return };
+        match rx.try_recv() {
+            Ok((restored, selected)) => {
+                self.restore_rx = None;
+                let stale = match &self.restore_snapshot_pending {
+                    Some(snap) => {
+                        snap.search_term != self.search_term
+                            || snap.filters != self.filters
+                            || snap.filter_mode != self.filter_mode
+                            || snap.time_range != self.time_range
+                    }
+                    None => true,
+                };
+                self.restore_snapshot_pending = None;
+                if !stale {
+                    self.apply_restore(restored, selected);
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.restore_rx = None;
+                self.restore_snapshot_pending = None;
+            }
+        }
+    }
+
+    /// The cheap, O(saved-view-size) half of restoring a view: everything that
+    /// doesn't need a file scan (filters/highlights/bookmarks/hidden/syntax/
+    /// zebra/search flags). Shared by the sync and async restore paths.
+    fn apply_view_fields(&mut self, v: &ViewState) {
         self.filter_mode = v.filter_mode;
-        self.filters = v.filters;
-        self.highlights = v.highlights;
+        self.filters = v.filters.clone();
+        self.highlights = v.highlights.clone();
         // Counts are marked pending; the run-loop scheduler fills them in
         // between frames so the viewport shows immediately.
         self.reset_counts_pending();
@@ -320,11 +483,11 @@ impl App {
         // reveals, and hides from conjuring phantom rows beyond EOF.
         let total = self.total;
         let in_file = move |n: &usize| *n >= 1 && *n <= total;
-        self.bookmarks = v.bookmarks.into_iter().filter(in_file).collect();
-        self.visible_lines = v.visible.into_iter().filter(in_file).collect();
-        self.hidden_lines = v.hidden.into_iter().filter(in_file).collect();
-        self.hide_cols_text = v.hide_cols;
-        self.col_sep_text = if v.col_sep.is_empty() { ",".to_string() } else { v.col_sep };
+        self.bookmarks = v.bookmarks.iter().copied().filter(in_file).collect();
+        self.visible_lines = v.visible.iter().copied().filter(in_file).collect();
+        self.hidden_lines = v.hidden.iter().copied().filter(in_file).collect();
+        self.hide_cols_text = v.hide_cols.clone();
+        self.col_sep_text = if v.col_sep.is_empty() { ",".to_string() } else { v.col_sep.clone() };
         self.syntax_color = v.syntax;
         self.zebra = v.zebra;
         self.color_filters = !v.no_filter_color;
@@ -334,18 +497,32 @@ impl App {
             self.search_term = v.search.clone();
             if self.search_regex && bad_regex(&self.search_term) {
                 self.search_error = Some("bad regex");
-            } else if let Ok(res) = search(
-                &self.index,
-                &[SearchTerm::new(&self.search_term, Op::And)
-                    .case(self.search_case)
-                    .rx(self.search_regex)],
-                &Scope::default(),
-            ) {
-                self.matches = res.matching_lines;
             }
         }
-        self.recompute();
-        if let Some(sel) = v.selected {
+    }
+
+    fn restore_snapshot(&self) -> RestoreSnapshot {
+        RestoreSnapshot {
+            search_term: self.search_term.clone(),
+            search_regex: self.search_regex,
+            search_case: self.search_case,
+            search_error: self.search_error,
+            filters: self.filters.clone(),
+            filter_mode: self.filter_mode,
+            time_range: self.time_range,
+        }
+    }
+
+    /// Apply a (possibly backgrounded) restore result: search matches, the
+    /// filter-restricted display set if one was computed, and the saved
+    /// selected line (revealing it first if it was filtered/hidden out).
+    fn apply_restore(&mut self, r: RestoreComputed, selected: Option<usize>) {
+        self.matches = r.matches;
+        match r.filter_cache {
+            Some(cache) => self.apply_precomputed_filter_cache(cache),
+            None => self.recompute(),
+        }
+        if let Some(sel) = selected {
             if let Some(p) = self.pos_of_line(sel) {
                 self.jump_to(p as i64);
             } else if sel >= 1 && sel <= self.total {
@@ -356,6 +533,16 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Overlay-only application of an already-computed filter match set — the
+    /// same tail as `recompute()`'s filtered branch, minus the search() call
+    /// the caller has already done (e.g. on a background thread).
+    fn apply_precomputed_filter_cache(&mut self, cache: Vec<usize>) {
+        self.filter_match_cache = cache;
+        self.build_displayed_from_cache();
+        self.rebuild_line_index();
+        self.refresh_matches_in_view();
     }
 
     /// Seed the shared recent-input history (search / filter / highlight) from
@@ -1142,6 +1329,8 @@ impl App {
             self.time_range = None;
             self.mode = Mode::Normal;
             self.refresh_preserving();
+        } else if !self.index.metadata_complete() {
+            self.hint = Some("still indexing — try again in a moment");
         } else if self.index.time_bounds().is_none() {
             self.hint = Some("no timestamps in this file — histogram unavailable");
         } else {
@@ -2300,6 +2489,9 @@ impl App {
             }
         };
         let mut s = format!(" {}   {}/{}   ", self.file_name, here, self.total);
+        if !self.index.metadata_complete() {
+            s.push_str(&format!("indexing {:.0}%  ", self.index.metadata_progress() * 100.0));
+        }
         if !self.search_term.is_empty() {
             let miv = self.miv.len();
             match self.search_error {
@@ -2647,8 +2839,13 @@ mod tests {
             .unwrap()
             .write_all(lines.join("\n").as_bytes())
             .unwrap();
-        let idx = LineIndex::open(&p, IndexOptions::default(), |_| {}).unwrap();
+        let idx = LineIndex::open(&p, IndexOptions::default()).unwrap();
         let _ = std::fs::remove_file(&p);
+        // Tests assert on level_of/ts_of-derived state right after construction;
+        // wait for the background metadata indexing so that's deterministic.
+        while !idx.metadata_complete() {
+            std::thread::yield_now();
+        }
         let mut app = App::new(idx, "test.log".into());
         app.height = 10;
         app.width = 80;

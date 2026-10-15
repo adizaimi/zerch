@@ -172,7 +172,7 @@ fn main() -> ExitCode {
     // done so it doesn't linger after the TUI (which uses the alternate screen) exits.
     eprint!("indexing {display_name}…");
     let _ = io::stderr().flush();
-    let index = match LineIndex::open(&path, IndexOptions::default(), |_pct| {}) {
+    let index = match LineIndex::open(&path, IndexOptions::default()) {
         Ok(idx) => idx,
         Err(e) => {
             eprintln!("\r\x1b[2Kzerch: could not read {display_name}: {e}");

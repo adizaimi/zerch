@@ -48,13 +48,21 @@ pub struct State {
 /// loop until the process is interrupted (Ctrl+C). `initial_view` (from `--view`) wins
 /// over any saved session, exactly as in `tui::run`.
 pub fn run(
-    index: LineIndex,
+    index: Arc<LineIndex>,
     file_name: String,
     initial_view: Option<ViewState>,
     session_key: Option<PathBuf>,
     restore_session: bool,
     port: Option<u16>,
 ) -> io::Result<()> {
+    // The web UI is a one-shot page load, not a live loop — wait for the
+    // background metadata (timestamp/level) indexing to finish so the first
+    // page served has fully-correct colours/histogram, matching the old
+    // fully-synchronous `LineIndex::open` behaviour.
+    while !index.metadata_complete() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
     // Seed token: explicit --view first, else the file's saved session (unless --fresh).
     let initial_token = initial_view
         .map(|v| serialize_view(&v))
@@ -68,7 +76,7 @@ pub fn run(
         .unwrap_or_default();
 
     let state = Arc::new(State {
-        index: Arc::new(index),
+        index,
         file_name,
         session_key,
         last_saved: Mutex::new(None),
